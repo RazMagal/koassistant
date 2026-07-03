@@ -33,7 +33,11 @@ function OllamaHandler:query(message_history, ollama_settings)
         return self:backgroundRequest(ollama_settings.base_url, headers, requestBody)
     end
     
-    local success, code, response = self:makeRequest(ollama_settings.base_url, headers, requestBody)
+    -- Optional per-provider `timeout`/`maxtime`; local Ollama on-device (Boox) is slow,
+    -- so offline configs should raise these (e.g. timeout=600, maxtime=600) to avoid the
+    -- default 120s total cap cutting off long answers. See docs/OFFLINE_MODELS.md.
+    local success, code, response = self:makeRequest(ollama_settings.base_url, headers, requestBody,
+        ollama_settings.timeout, ollama_settings.maxtime)
     if not success then
         if code == BaseHandler.CODE_CANCELLED then
             return nil, response

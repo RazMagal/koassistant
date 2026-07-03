@@ -91,6 +91,19 @@ local CONFIGURATION = {
 return CONFIGURATION
 ```
 
+#### Offline / On-Device Models (no internet)
+
+You can run a **local model fully offline** — great for Android e-ink devices like the Onyx
+Boox, or any time you're without a connection. The plugin talks to any local
+OpenAI-compatible server (e.g. llama.cpp's `llama-server` or Ollama running on the device in
+Termux, or on another machine on your LAN), so no data leaves your network and there's no API
+cost. Ready-made `openai_local`, `ollama_local`, and `openai_lan` provider entries are in
+`configuration.sample.lua`.
+
+See **[docs/OFFLINE_MODELS.md](docs/OFFLINE_MODELS.md)** for the full walkthrough: which
+server to install, which small model to pick, e-ink tips, and how to keep both offline and
+cloud providers configured and switch between them.
+
 ### 4. Using the Plugin
 
 #### Standard Usage

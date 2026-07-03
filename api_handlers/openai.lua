@@ -27,7 +27,12 @@ function OpenAIHandler:query(message_history, openai_settings)
     end
     
 
-    local status, code, response = self:makeRequest(openai_settings.base_url, headers, requestBody)
+    -- `timeout` (per-request inactivity/block timeout) and `maxtime` (total wall-clock
+    -- budget for the whole response) are optional and default in makeRequest(). Local /
+    -- on-device servers (llama.cpp, Ollama on a Boox) are much slower than cloud APIs, so
+    -- offline provider configs should set generous values, e.g. timeout=600, maxtime=600.
+    local status, code, response = self:makeRequest(openai_settings.base_url, headers, requestBody,
+        openai_settings.timeout, openai_settings.maxtime)
 
     if status then
         local success, responseData = pcall(json.decode, response)

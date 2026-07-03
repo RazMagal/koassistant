@@ -203,6 +203,61 @@ local CONFIGURATION = {
             api_key = "ollama",
             additional_parameters = {}
         },
+
+        -- ────────────────────────────────────────────────────────────────────────────
+        -- OFFLINE / ON-DEVICE MODELS  (no internet needed once the model is downloaded)
+        --
+        -- Run a local OpenAI-compatible LLM server and point base_url at it. On an Onyx
+        -- Boox (Android e-ink) the easiest server is llama.cpp's `llama-server` running in
+        -- Termux; you can also run Ollama, or a server on another PC on your LAN.
+        --
+        -- Full setup guide (which app, which model, e-ink tips): docs/OFFLINE_MODELS.md
+        --
+        -- Because on-device inference is slow, these configs raise the request timeouts
+        -- (the default is a 120s total cap, which cuts off longer answers) and turn on
+        -- stream mode via the Settings dialog is recommended so tokens appear as they come.
+        -- ────────────────────────────────────────────────────────────────────────────
+
+        -- llama.cpp `llama-server` running ON the Boox in Termux (fully offline).
+        -- Start it with, e.g.:  llama-server -m qwen2.5-1.5b-instruct-q4_k_m.gguf --port 8080
+        openai_local = {
+            visible = true,
+            model = "local-model",   -- llama-server ignores this; any string works
+            base_url = "http://127.0.0.1:8080/v1/chat/completions",
+            api_key = "no-key-needed",  -- llama.cpp doesn't check it, but the field is required
+            timeout = 600,   -- inactivity/block timeout in seconds (slow CPU may take a while to first byte)
+            maxtime = 600,   -- total wall-clock budget for one response
+            additional_parameters = {
+                temperature = 0.7,
+            }
+        },
+
+        -- Same idea but talking to a server on another machine on your Wi-Fi/LAN
+        -- (heavier models, "offline" from the internet but needs the other machine on).
+        -- Replace the IP with your PC's LAN address.
+        openai_lan = {
+            visible = false,
+            model = "local-model",
+            base_url = "http://192.168.1.50:8080/v1/chat/completions",
+            api_key = "no-key-needed",
+            timeout = 600,
+            maxtime = 600,
+            additional_parameters = {
+                temperature = 0.7,
+            }
+        },
+
+        -- Ollama running locally (on-device in Termux, or on a LAN machine).
+        -- Uses the OpenAI-compatible /v1/chat/completions endpoint Ollama exposes.
+        ollama_local = {
+            visible = false,
+            model = "qwen2.5:1.5b",   -- must match a model you've `ollama pull`ed
+            base_url = "http://127.0.0.1:11434/v1/chat/completions",
+            api_key = "ollama",
+            timeout = 600,
+            maxtime = 600,
+            additional_parameters = {}
+        },
         mistral = {
             model = "mistral-small-latest", -- model list: https://docs.mistral.ai/getting-started/models/models_overview/
             base_url = "https://api.mistral.ai/v1/chat/completions",
