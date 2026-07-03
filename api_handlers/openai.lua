@@ -10,9 +10,27 @@ function OpenAIHandler:query(message_history, openai_settings)
     local requestBodyTable = {
         model = openai_settings.model,
         messages = message_history,
+        -- Backward compat: some older configs set max_tokens at the top level.
         max_tokens = openai_settings.max_tokens,
-        stream = koutil.tableGetValue(openai_settings, "additional_parameters", "stream") or false,
     }
+
+    -- Copy recognized OpenAI chat-completions options from additional_parameters
+    -- (matches the deepseek/groq/mistral handlers). Previously only `stream` was read
+    -- here, so temperature / max_tokens set under additional_parameters had no effect —
+    -- which matters for local/offline servers where you want to cap output length.
+    if openai_settings.additional_parameters then
+        for _, option in ipairs({"temperature", "top_p", "max_tokens", "max_completion_tokens",
+                                 "frequency_penalty", "presence_penalty", "stop", "seed",
+                                 "stream", "reasoning_effort", "response_format", "tools"}) do
+            if openai_settings.additional_parameters[option] then
+                requestBodyTable[option] = openai_settings.additional_parameters[option]
+            end
+        end
+    end
+
+    if requestBodyTable.stream == nil then
+        requestBodyTable.stream = false
+    end
 
     local requestBody = json.encode(requestBodyTable)
     local headers = {

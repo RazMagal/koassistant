@@ -229,6 +229,7 @@ local CONFIGURATION = {
             maxtime = 600,   -- total wall-clock budget for one response
             additional_parameters = {
                 temperature = 0.7,
+                max_tokens = 1024,  -- cap output so e-ink replies stay snappy; raise for longer answers
             }
         },
 
