@@ -224,6 +224,19 @@ with the machine's IP instead.
 See [Keeping the server alive](#keeping-the-server-alive-on-boox-important) — battery
 whitelist + `termux-wake-lock`.
 
+**KOReader freezes on the very first AI query.**
+This is usually a cold-start stall — the request arrives while the model is still loading, and
+the UI blocks. Trigger AI only after the server is ready (`curl http://127.0.0.1:8080/health`
+returns `{"status":"ok"}`), and keep **Stream mode on** (it gives a dismissable "AI is
+responding" dialog with a Stop button instead of a hard block). If it does freeze, fully
+close and reopen KOReader — your reading position is saved. Once the model is warm, subsequent
+queries are much smoother.
+
+**Answers are rambling, repetitive, or plainly wrong.**
+The local model is too small. A 0.5B model produces low-quality, padded output; step up to
+**Qwen2.5-1.5B** for genuinely useful answers (or Llama-3.2-1B as a lighter middle ground).
+Reserve the token-heavy features (Recap / X-Ray) for a cloud provider.
+
 ---
 
 ## Hybrid: online + offline
