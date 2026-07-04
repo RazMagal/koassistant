@@ -6,7 +6,7 @@
 
 A powerful plugin that lets you interact with AI language models (Claude, GPT-4, Gemini, DeepSeek, Ollama etc.) while reading. Ask questions about text, get translations, summaries, explanations and more - all without leaving your book.
 
-> **This fork adds offline / on-device model support** for Android e-ink devices (Onyx Boox and friends): run a small local LLM (llama.cpp / Ollama, on-device via Termux or on your LAN) and use the plugin with no internet and no API cost. See **[docs/OFFLINE_MODELS.md](docs/OFFLINE_MODELS.md)**. Tracks upstream [omer-faruq/assistant.koplugin](https://github.com/omer-faruq/assistant.koplugin).
+> **This fork adds offline / on-device model support** for Android e-ink devices (Onyx Boox and friends): run a small local LLM (llama.cpp / Ollama, on-device via Termux or on your LAN) and use the plugin with no internet and no API cost. **New here? Start with the [Quick Start install guide](INSTALL.md).** The easy offline path uses the companion [KoLlama](https://github.com/RazMagal/kollama) app; the full deep-dive is in **[docs/OFFLINE_MODELS.md](docs/OFFLINE_MODELS.md)**. Tracks upstream [omer-faruq/assistant.koplugin](https://github.com/omer-faruq/assistant.koplugin).
 
 <small>Originally forked from a deleted fork of AskGPT by zeeyado, then modified using WindSurf. That fork is now public and includes many updates: https://github.com/zeeyado/koassistant.koplugin </small>
 
