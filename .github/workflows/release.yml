@@ -48,7 +48,10 @@ jobs:
           mkdir "$PACKAGE_NAME"
           # Copy project files into the directory using a tar pipe, excluding unwanted files.
           # This archives the current directory and immediately extracts it into the target directory.
-          tar c --exclude='./.*' --exclude='./*.md' --exclude="./$PACKAGE_NAME" . | tar x -C "$PACKAGE_NAME"
+          # NOTE: do NOT add --exclude='./*.md' here — GNU tar excludes are
+          # unanchored by default, so that pattern also stripped docs/*.md and
+          # shipped a release without the documentation README/INSTALL point at.
+          tar c --exclude='./.*' --exclude="./$PACKAGE_NAME" . | tar x -C "$PACKAGE_NAME"
           # Remove development helper files from the l10n directory (keep only .po files)
           echo "Cleaning up l10n directory, keeping only .po files..."
           find "$PACKAGE_NAME/l10n" -type f ! -name '*.po' -print -delete
@@ -63,7 +66,9 @@ jobs:
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v2
         with:
-          # Mark this release as a pre-release. Set to 'false' to create a full release.
-          prerelease: true
+          # Full release so GitHub's "latest release" exists (releases/latest
+          # links and the plugin's update checker depend on it). Set to 'true'
+          # only for actual pre-release tags.
+          prerelease: false
           # The files to upload as release assets.
           files: assistant.koplugin-${{ github.ref_name }}.zip
