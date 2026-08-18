@@ -35,7 +35,9 @@ set -euo pipefail
 # -------------------- Configuration --------------------
 API_ENDPOINT=${API_ENDPOINT:-"https://api.openai.com/v1/chat/completions"}
 API_MODEL=${API_MODEL:-"gpt-4o-mini"}
-AUTH_HEADER="Authorization: Bearer ${API_KEY}"
+# NOTE: AUTH_HEADER is built after the API_KEY validation below — expanding
+# ${API_KEY} here would die with a cryptic "unbound variable" under set -u
+# before the friendly error message is reachable.
 PROMPT_TEMPLATE=$(cat <<'EOF'
 You are an expert localization specialist tasked with translating a gettext `.po` file from English to __YOUR_LANGUAGE__.
 
@@ -162,6 +164,7 @@ LANG_CODE="$1"
   echo "Error: API_KEY environment variable not set." >&2
   exit 1
 }
+AUTH_HEADER="Authorization: Bearer ${API_KEY}"
 
 # Customize the prompt with the target language name.
 LANG_FULLNAME="${LANG_MAP["$LANG_CODE"]}"
@@ -181,17 +184,17 @@ OUTPUTFILE=
 
 # Scenario 1: New language translation.
 # If neither a translated file nor an untranslated file exists, start from the template.
-if [[ ! -f "$TRANSLATED_FILE" && ! -f "$UNTRANSLATED_FILE" ]] then
+if [[ ! -f "$TRANSLATED_FILE" && ! -f "$UNTRANSLATED_FILE" ]]; then
   # when the target language is untranslated
   cp "$TEMPLATE_FILE" "$UNTRANSLATED_FILE"
   INPUTFILE=$UNTRANSLATED_FILE
   OUTPUTFILE=$TRANSLATED_FILE
-elif [[ -f "$TRANSLATED_FILE" && -f "$UPDATED_TRANSLATED_FILE" ]] then
+elif [[ -f "$TRANSLATED_FILE" && -f "$UPDATED_TRANSLATED_FILE" ]]; then
   echo "the translated file exits, skip for $LANG_CODE ($LANG_FULLNAME)"
   exit 0
 # Scenario 2: Updating an existing language.
 # If an untranslated file exists alongside the main translated file, translate only the new strings.
-elif [[ -f "$TRANSLATED_FILE" && -f "$UNTRANSLATED_FILE" ]] then
+elif [[ -f "$TRANSLATED_FILE" && -f "$UNTRANSLATED_FILE" ]]; then
   # when target language is updated
   INPUTFILE=$UNTRANSLATED_FILE
   OUTPUTFILE=$UPDATED_TRANSLATED_FILE
@@ -216,12 +219,20 @@ PAYLOAD=$(jq -n \
 
 # Send the request to the API endpoint using cURL.
 # -S shows errors, -f fails silently on HTTP errors.
-RESPONSE=$(curl -Sf --retry 5 --retry-delay 2 --retry-connrefused --max-time 30 -X POST "$API_ENDPOINT" \
+# --max-time 600: translating a whole .po file takes far longer than 30s.
+RESPONSE=$(curl -Sf --retry 5 --retry-delay 2 --retry-connrefused --max-time 600 -X POST "$API_ENDPOINT" \
   -H "$AUTH_HEADER" -H "Content-Type: application/json" \
   --data-raw "$PAYLOAD")
 
-# Parse the JSON response, extract the translated content, and save it to the output file.
-echo "$RESPONSE" | jq -r '.choices[0].message.content' \
-  > "$OUTPUTFILE"
+# Parse the JSON response and extract the translated content. Guard against a
+# missing/null field: `jq -r` would otherwise write the literal string "null"
+# into the output .po, which the Makefile then treats as a success.
+CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+if [[ -z "$CONTENT" ]]; then
+  echo "Error: API returned no translation content for $LANG_CODE. Response head:" >&2
+  echo "$RESPONSE" | head -c 2000 >&2
+  exit 1
+fi
+printf '%s\n' "$CONTENT" > "$OUTPUTFILE"
 
 echo "Translation completed for $LANG_CODE ($LANG_FULLNAME)."

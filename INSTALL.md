@@ -52,8 +52,9 @@ Termux, no command line.
    `http://127.0.0.1:8080/v1/chat/completions` with generous timeouts for slow on-device
    inference. Restart KOReader.
 5. **Use it.** Highlight text → **AI Assistant** → **Ask** / **Translate** / **Dictionary**.
-   Turn on **Stream mode** in the plugin's Settings dialog — on a local server it makes tokens
-   appear as they generate, which reads far better on e-ink.
+   Stream mode is **on by default** and is what you want on a local server: tokens appear as
+   they generate, which reads far better on e-ink. (The toggle, if you ever need it, is under
+   `AI Assistant → AI Assistant Settings → Stream Mode Settings → Enable stream response`.)
 
 That's it — Ask / Translate / Dictionary now work with **no internet and no API bill**.
 
@@ -88,7 +89,9 @@ Prefer not to install the app? The offline endpoint can also come from:
 - **Termux + llama.cpp** on the device (no extra app) — see
   [docs/OFFLINE_MODELS.md § Option A](docs/OFFLINE_MODELS.md#option-a--llamacpp-in-termux-recommended-fully-on-device).
 - **A PC/Mac on your Wi-Fi** running any OpenAI-compatible server, for much larger models —
-  use the `openai_lan` provider (§ Option C).
+  use the `openai_lan` provider (§ Option C). Note it ships with `visible = false` in the
+  sample config: set `visible = true` (or remove the line) so it appears in the provider
+  switcher, and put your PC's LAN IP in its `base_url`.
 
 ---
 

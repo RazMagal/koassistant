@@ -13,7 +13,7 @@ all: translate
 # 8. Cleans up all intermediate files.
 translate:
 	@if [ ! -f .env ]; then \
-		echo "\033[0;31mError: AI access environment file \`.env' is not found.\033[0m"; \
+		printf "\033[0;31mError: AI access environment file '.env' is not found.\033[0m\n"; \
 		echo "Please set it before running translation. See: README.md"; \
 		exit 1; \
 	fi
@@ -31,7 +31,7 @@ translate:
 	@$(MAKE) check
 	@echo "[7/7] Cleaning up intermediate files..."
 	@$(MAKE) clean
-	@echo "\nTranslation process completed successfully!"
+	@printf "\nTranslation process completed successfully!\n"
 
 
 DOMAIN = koreader
@@ -46,7 +46,10 @@ XGETTEXT_BIN = xgettext
 
 LANGS :=  zh_CN zh_TW ar bg_BG bn ca cs da de el eo es eu fa fi fr gl he hi hr hu it_IT ja ka kk ko_KR lt_LT lv nb_NO nl_NL pl pt_BR pt_PT ro ro_MD ru sk sr sv th tr uk vi vi_VN
 
-PO_FILES  := $(wildcard */$(DOMAIN).po)
+# Recursive assignment (=) on purpose: with :=, the wildcard expands at parse
+# time and languages first created by init-dirs in the same run would be
+# skipped by update/extract-untranslated until a second invocation.
+PO_FILES  = $(wildcard */$(DOMAIN).po)
 
 init-dirs: template
 	@echo "Ensuring language directories and initial .po files exist..."
@@ -117,11 +120,11 @@ ai-translate-%:
 	IS_NEW=0; if [ ! -f "$$lang/$(DOMAIN).po" ]; then IS_NEW=1; fi; \
 	./AI_TRANSLATE.sh $$lang && { \
 		if [ $$IS_NEW -eq 1 ]; then \
-			if [ ! -f "$$lang/$(DOMAIN).po" ]; then \
-				echo "\033[0;31mError: AI translation for new language '$$lang' failed. File '$$lang/$(DOMAIN).po' not created.\033[0m"; exit 1; \
+			if [ ! -s "$$lang/$(DOMAIN).po" ]; then \
+				printf "\033[0;31mError: AI translation for new language '%s' failed. File '%s/$(DOMAIN).po' not created.\033[0m\n" "$$lang" "$$lang"; exit 1; \
 			fi; \
-		elif [ -s "$$lang/untranslated.po" ] && [ ! -f "$$lang/updated_translated.po" ]; then \
-			echo "\033[0;31mError: AI translation for '$$lang' failed. File '$$lang/updated_translated.po' not created.\033[0m"; exit 1; \
+		elif [ -s "$$lang/untranslated.po" ] && [ ! -s "$$lang/updated_translated.po" ]; then \
+			printf "\033[0;31mError: AI translation for '%s' failed. File '%s/updated_translated.po' not created.\033[0m\n" "$$lang" "$$lang"; exit 1; \
 		fi; \
 	} || exit 1
 

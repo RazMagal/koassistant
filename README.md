@@ -124,8 +124,8 @@ cloud providers configured and switch between them.
 You can set up a long-press gesture to open the AI Dictionary instantly, bypassing the highlight menu. This is done by overriding KOReader's built-in "Translate" action. (thanks to [Ilia Reutov](https://github.com/Agnesor))
 
 1.  **Enable the Override**:
-    *   Navigate to the top menu `Tools (🔧) > More tools`.
-    *   Find and enable **Use AI Dictionary for 'Translate'**.
+    *   Navigate to the top menu `Tools (🔧) > AI Assistant > AI Assistant Settings > KOReader Tweaks & Overrides`.
+    *   Find and enable **Use AI Assistant for 'Translate'**.
 
 2.  **Set the Gesture**:
     *   Go to KOReader's main menu -> `Taps and gestures` -> `Gesture manager`.
@@ -176,3 +176,7 @@ Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/d
 <!-- ALL-CONTRIBUTORS-LIST:END -->
 
 This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind welcome!
+
+## License
+
+This project is licensed under the [GNU General Public License v3.0](LICENSE).

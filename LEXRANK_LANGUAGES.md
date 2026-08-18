@@ -249,13 +249,13 @@ Understanding your language's pronoun system helps determine optimal context win
 
 ### Configuring Context Window for Your Language
 
-The default configuration uses `term_xray_context_sentences_before = 2` and `term_xray_context_sentences_after = 2`.
+The default configuration uses `term_xray_context_sentences_before = 5` and `term_xray_context_sentences_after = 5` (both the code default and the value shipped in `configuration.sample.lua`).
 
 Recommendations by language type:
-- **English, Germanic languages with clear pronouns:** Default 2+2 works well
-- **Romance languages with case marking:** Consider 2-3 before/after
-- **Slavic languages with flexible word order:** Consider 3 before/after
-- **East Asian languages with pronoun omission:** Consider 3-4 before/after
+- **English, Germanic languages with clear pronouns:** The default 5+5 works well; 2+2 is enough for quick summaries
+- **Romance languages with case marking:** 3-5 before/after
+- **Slavic languages with flexible word order:** 3-5 before/after
+- **East Asian languages with pronoun omission:** 4-5+ before/after
 
 Users can adjust these values in their configuration file:
 ```lua

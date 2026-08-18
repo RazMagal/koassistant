@@ -144,23 +144,30 @@ Rules of thumb:
        maxtime = 600,   -- total wall-clock budget for one response
    }
    ```
-   > **Why the big timeouts?** On-device generation is slow, and the plugin's default cap is
-   > 120 s total — long answers would get cut off. The `timeout`/`maxtime` fields (honored by
-   > the `openai` and `ollama` handlers) raise that ceiling.
+   > **Why the big timeouts?** On-device generation is slow, and the plugin's default caps
+   > (45 s total for small requests, 300 s for large book analyses) would cut off long
+   > answers. The per-provider `timeout`/`maxtime` fields raise that ceiling and are honored
+   > in both stream and non-stream mode.
 3. Fully close and reopen KOReader so it reloads the config.
 
 ---
 
-## Step 4 — Use it, and turn on Stream mode
+## Step 4 — Use it (Stream mode is already on)
 
 1. Start your local server (Step 1) and confirm it's up. From Termux:
    ```bash
    curl http://127.0.0.1:8080/v1/models
    ```
 2. In a book, highlight text → **AI Assistant** → **Ask** (or Translate / Dictionary).
-3. In the plugin's **Settings dialog**, turn on **Stream mode**. On a local server this
-   makes tokens appear as they're generated instead of waiting for the whole answer, so it
-   *feels* far faster and side-steps the total-time cap entirely.
+3. **Stream mode is on by default** and is what you want here: tokens appear as they're
+   generated instead of waiting for the whole answer, so it *feels* far faster. If you ever
+   turned it off, re-enable it under
+   `AI Assistant → AI Assistant Settings → Stream Mode Settings → Enable stream response`.
+
+> **Wi-Fi note:** for providers pointing at the device itself (`127.0.0.1` / `localhost`,
+> e.g. `openai_local` and `ollama_local`) the plugin skips KOReader's "enable Wi-Fi?"
+> online check, so everything works in airplane mode. A LAN provider (`openai_lan`) still
+> needs Wi-Fi on, and KOReader will prompt for it.
 
 ---
 
