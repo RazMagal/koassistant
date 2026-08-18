@@ -7,14 +7,16 @@ local OllamaHandler = BaseHandler:new()
 
 function OllamaHandler:query(message_history, ollama_settings)
 
-    local required_settings = {"base_url", "model", "api_key"}
+    -- api_key is optional: local Ollama servers don't check it.
+    local required_settings = {"base_url", "model"}
     for _, setting in ipairs(required_settings) do
       if not ollama_settings[setting] then
-        return "Error: Missing " .. setting .. " in configuration"
+        return nil, "Error: Missing " .. setting .. " in configuration"
       end
     end
 
-    -- Ollama uses OpenAI-compatible API format
+    -- Ollama accepts this body on both its native /api/chat endpoint and its
+    -- OpenAI-compatible /v1/chat/completions endpoint.
     local requestBodyTable = {
         model = ollama_settings.model,
         messages = message_history,
@@ -24,18 +26,23 @@ function OllamaHandler:query(message_history, ollama_settings)
     local requestBody = json.encode(requestBodyTable)
     local headers = {
         ["Content-Type"] = "application/json",
-        ["Authorization"] = "Bearer " .. ollama_settings.api_key
     }
+    if ollama_settings.api_key then
+        headers["Authorization"] = "Bearer " .. ollama_settings.api_key
+    end
 
     if requestBodyTable.stream then
-        -- For streaming responses, we need to handle the response differently
+        -- For streaming responses, we need to handle the response differently.
+        -- /v1/chat/completions streams SSE; native /api/chat streams NDJSON —
+        -- the stream parser in assistant_querier.lua handles both.
         headers["Accept"] = "text/event-stream"
-        return self:backgroundRequest(ollama_settings.base_url, headers, requestBody)
+        return self:backgroundRequest(ollama_settings.base_url, headers, requestBody,
+            ollama_settings.timeout, ollama_settings.maxtime)
     end
-    
+
     -- Optional per-provider `timeout`/`maxtime`; local Ollama on-device (Boox) is slow,
     -- so offline configs should raise these (e.g. timeout=600, maxtime=600) to avoid the
-    -- default 120s total cap cutting off long answers. See docs/OFFLINE_MODELS.md.
+    -- default 300s total cap cutting off long answers. See docs/OFFLINE_MODELS.md.
     local success, code, response = self:makeRequest(ollama_settings.base_url, headers, requestBody,
         ollama_settings.timeout, ollama_settings.maxtime)
     if not success then
@@ -51,12 +58,17 @@ function OllamaHandler:query(message_history, ollama_settings)
         return nil, "Error: Failed to parse Ollama API response"
     end
 
-    local content = koutil.tableGetValue(parsed, "message", "content")
+    -- OpenAI-compatible endpoint (/v1/chat/completions) reply shape first,
+    -- then Ollama's native /api/chat reply shape.
+    local content = koutil.tableGetValue(parsed, "choices", 1, "message", "content")
+        or koutil.tableGetValue(parsed, "message", "content")
     if content then return content end
 
-    local err_msg = koutil.tableGetValue(parsed, "error")
+    -- Errors: OpenAI-compat shape {"error":{"message":...}} or native {"error":"..."}
+    local err_msg = koutil.tableGetValue(parsed, "error", "message")
+        or koutil.tableGetValue(parsed, "error")
     if err_msg then
-        return nil, err_msg
+        return nil, tostring(err_msg)
     else
         return nil, "Error: Unexpected response format from API"
     end

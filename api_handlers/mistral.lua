@@ -16,7 +16,7 @@ function MistralHandler:query(message_history, mistral_settings)
     if mistral_settings.additional_parameters then
         --- available req body args: https://docs.mistral.ai/api/
         for _, option in ipairs({"temperature", "top_p", "n", "max_tokens", "stream"}) do
-            if mistral_settings.additional_parameters[option] then
+            if mistral_settings.additional_parameters[option] ~= nil then
                 requestBodyTable[option] = mistral_settings.additional_parameters[option]
             end
         end
@@ -32,11 +32,12 @@ function MistralHandler:query(message_history, mistral_settings)
     if requestBodyTable.stream then
         -- For streaming responses, we need to handle the response differently
         headers["Accept"] = "text/event-stream"
-        return self:backgroundRequest(mistral_settings.base_url, headers, requestBody)
+        return self:backgroundRequest(mistral_settings.base_url, headers, requestBody,
+            mistral_settings.timeout, mistral_settings.maxtime)
     end
-    
 
-    local status, code, response = self:makeRequest(mistral_settings.base_url, headers, requestBody)
+    local status, code, response = self:makeRequest(mistral_settings.base_url, headers, requestBody,
+        mistral_settings.timeout, mistral_settings.maxtime)
 
     if status then
         local success, responseData = pcall(json.decode, response)
@@ -49,14 +50,15 @@ function MistralHandler:query(message_history, mistral_settings)
         logger.warn("API Error", code, response)
         if success then
             local err_msg = koutil.tableGetValue(responseData, "message")
-            if err_msg then return nil, "API Error: " .. err_msg end
+            -- Mistral 422 validation errors return `message` as a table, not a string
+            if err_msg ~= nil then return nil, "API Error: " .. tostring(err_msg) end
         end
     end
     
     if code == BaseHandler.CODE_CANCELLED then
         return nil, response
     end
-    return nil, "Error: " .. (code or "unknown") .. " - " .. response
+    return nil, "Error: " .. (code or "unknown") .. " - " .. tostring(response)
 end
 
 return MistralHandler

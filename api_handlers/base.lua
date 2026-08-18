@@ -51,7 +51,12 @@ end
 --- @param maxtime any total response finished max time
 --- @return boolean success, string status_code, string content
 local function postURLContent(url, headers, body, timeout, maxtime)
+    -- NOTE: disabling certificate verification is a deliberate (upstream) compatibility
+    -- tradeoff for devices with stale CA bundles, but it is a process-global flag, so we
+    -- save and restore it to avoid weakening every other HTTPS request KOReader makes.
+    local old_cert_verify
     if string.sub(url, 1, 8) == "https://" then
+        old_cert_verify = https.cert_verify
         https.cert_verify = false  -- disable CA verify
     end
 
@@ -64,8 +69,18 @@ local function postURLContent(url, headers, body, timeout, maxtime)
         source = ltn12.source.string(body or ""),
         sink = maxtime and socketutil.table_sink(sink) or ltn12.sink.table(sink),
     }
-    local code, headers, status = socket.skip(1, http.request(request)) -- skip the first return value, not needed
+    -- pcall so an error inside http.request cannot skip the timeout/cert restore below
+    local ok, code, headers, status = pcall(function()
+        return socket.skip(1, http.request(request)) -- skip the first return value, not needed
+    end)
     socketutil:reset_timeout()
+    if old_cert_verify ~= nil then
+        https.cert_verify = old_cert_verify
+    end
+    if not ok then
+        logger.warn("http.request error:", code)
+        return false, BaseHandler.CODE_NETWORK_ERROR, "Network Error: " .. tostring(code)
+    end
     local content = table.concat(sink)  -- response body
 
     -- check for timeouts
@@ -79,7 +94,7 @@ local function postURLContent(url, headers, body, timeout, maxtime)
     -- check for network errors
     if headers == nil then
         logger.warn("No HTTP headers:", status or code or "network unreachable")
-        return false, BaseHandler.CODE_NETWORK_ERROR, "Network Error: " .. status or code
+        return false, BaseHandler.CODE_NETWORK_ERROR, "Network Error: " .. tostring(status or code)
     end
 
     -- check response length
@@ -101,7 +116,7 @@ function BaseHandler:makeRequest(url, headers, body, timeout, maxtime)
         local request_timeout, request_maxtime
         if body and #body > 10000 then
             request_timeout = timeout or 300
-            request_maxtime = maxtime or 120
+            request_maxtime = maxtime or 300 -- total budget must be >= block timeout, or it caps the request
         else
             request_timeout = timeout or 45
             request_maxtime = maxtime or 120
@@ -145,11 +160,20 @@ end
 -- Background request function
 --- This function is used to make a request in the background,
 --- typically in a subprocess, and write the response to a pipe.
-function BaseHandler:backgroundRequest(url, headers, body)
+--- @param timeout any optional blocking timeout (seconds); honors per-provider `timeout`
+--- @param maxtime any optional total budget (seconds); only the block timeout is fully
+---        enforced with a file sink, but setting it keeps the semantics of makeRequest
+function BaseHandler:backgroundRequest(url, headers, body, timeout, maxtime)
     return function(pid, child_write_fd)
         if not pid or not child_write_fd then
             logger.warn("Invalid parameters for background request")
             return
+        end
+
+        if timeout or maxtime then
+            -- This function body runs in the forked subprocess, so the global
+            -- socket timeouts set here cannot leak into the main process.
+            socketutil:set_timeout(timeout or 45, maxtime or timeout or 600)
         end
 
         local pipe_w = wrap_fd(child_write_fd)  -- wrap the write end of the pipe

@@ -22,7 +22,7 @@ function OpenAIHandler:query(message_history, openai_settings)
         for _, option in ipairs({"temperature", "top_p", "max_tokens", "max_completion_tokens",
                                  "frequency_penalty", "presence_penalty", "stop", "seed",
                                  "stream", "reasoning_effort", "response_format", "tools"}) do
-            if openai_settings.additional_parameters[option] then
+            if openai_settings.additional_parameters[option] ~= nil then
                 requestBodyTable[option] = openai_settings.additional_parameters[option]
             end
         end
@@ -41,7 +41,8 @@ function OpenAIHandler:query(message_history, openai_settings)
     if requestBodyTable.stream then
         -- For streaming responses, we need to handle the response differently
         headers["Accept"] = "text/event-stream"
-        return self:backgroundRequest(openai_settings.base_url, headers, requestBody)
+        return self:backgroundRequest(openai_settings.base_url, headers, requestBody,
+            openai_settings.timeout, openai_settings.maxtime)
     end
     
 
@@ -70,7 +71,7 @@ function OpenAIHandler:query(message_history, openai_settings)
     if code == BaseHandler.CODE_CANCELLED then
         return nil, response
     end
-    return nil, "Error: " .. (code or "unknown") .. " - " .. response
+    return nil, "Error: " .. (code or "unknown") .. " - " .. tostring(response)
 end
 
 return OpenAIHandler

@@ -12,7 +12,7 @@ local GigaChatHandler = BaseHandler:new()
 
 function GigaChatHandler:query(message_history, gigachat_settings)
     if not gigachat_settings or not gigachat_settings.base_url then
-        return "Error: Missing base_url in configuration"
+        return nil, "Error: Missing base_url in configuration"
     end
 
     local token, err = self:getAccessToken(gigachat_settings)
@@ -39,7 +39,8 @@ function GigaChatHandler:query(message_history, gigachat_settings)
     if requestBodyTable.stream then
         -- For streaming responses, we need to handle the response differently
         headers["Accept"] = "text/event-stream"
-        return self:backgroundRequest(gigachat_settings.base_url, headers, requestBody)
+        return self:backgroundRequest(gigachat_settings.base_url, headers, requestBody,
+            gigachat_settings.timeout, gigachat_settings.maxtime)
     end
 
     local request_timeout, request_maxtime
@@ -74,6 +75,11 @@ function GigaChatHandler:query(message_history, gigachat_settings)
     local content = koutil.tableGetValue(parsed, "choices", 1, "message", "content")
     if content then return content end
 
+    if code == 401 then
+        -- Token was rejected; drop the cache so the next query re-authorizes
+        self.tokenInfo = nil
+    end
+
     local apiError = koutil.tableGetValue(parsed, "error")
 
     if apiError and apiError.message then
@@ -89,8 +95,8 @@ end
 --- @param gigachat_settings table: GigaChat settings
 --- @return string? accessToken, string? error
 function GigaChatHandler:getAccessToken(gigachat_settings)
-    -- Return cached token if valid
-    if self.tokenInfo and self.tokenInfo.accessToken and self.tokenInfo.expiresAt and self.tokenInfo.expiresAt > os.time() then
+    -- Return cached token if valid (60s skew so we never use a token about to expire)
+    if self.tokenInfo and self.tokenInfo.accessToken and self.tokenInfo.expiresAt and self.tokenInfo.expiresAt > os.time() + 60 then
         return self.tokenInfo.accessToken
     end
 

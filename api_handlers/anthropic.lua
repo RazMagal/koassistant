@@ -12,7 +12,7 @@ local function prepare_anthropic_messages(message_history)
     -- Extract and concatenate all system prompts
     for i, msg in ipairs(message_history) do
         if msg.role == "system" then
-            system_content = system_content .. msg.content .. "\n\n"
+            system_content = system_content .. (msg.content or "") .. "\n\n"
         end
     end
 
@@ -58,7 +58,10 @@ function AnthropicHandler:query(message_history, anthropic_settings)
     
     local requestBodyTable = prepare_anthropic_messages(message_history)
     requestBodyTable.model = anthropic_settings.model
+    -- max_tokens is mandatory in the Anthropic Messages API; default it so configs
+    -- without additional_parameters don't get an opaque 400
     requestBodyTable.max_tokens = koutil.tableGetValue(anthropic_settings, "additional_parameters", "max_tokens")
+        or 4096
     requestBodyTable.stream = koutil.tableGetValue(anthropic_settings, "additional_parameters", "stream") or false
     local tools = koutil.tableGetValue(anthropic_settings, "additional_parameters", "tools")
     if type(tools) == "table" and next(tools) ~= nil then
@@ -69,15 +72,19 @@ function AnthropicHandler:query(message_history, anthropic_settings)
     local headers = {
         ["Content-Type"] = "application/json",
         ["x-api-key"] = anthropic_settings.api_key,
+        -- the anthropic-version header is mandatory; default to a stable version
         ["anthropic-version"] = koutil.tableGetValue(anthropic_settings, "additional_parameters", "anthropic_version")
+            or "2023-06-01"
     }
     if requestBodyTable.stream then
         -- For streaming responses, we need to handle the response differently
         headers["Accept"] = "text/event-stream"
-        return self:backgroundRequest(anthropic_settings.base_url, headers, requestBody)
+        return self:backgroundRequest(anthropic_settings.base_url, headers, requestBody,
+            anthropic_settings.timeout, anthropic_settings.maxtime)
     end
 
-    local success, code, response = self:makeRequest(anthropic_settings.base_url, headers, requestBody)
+    local success, code, response = self:makeRequest(anthropic_settings.base_url, headers, requestBody,
+        anthropic_settings.timeout, anthropic_settings.maxtime)
 
     if not success then
         if code == BaseHandler.CODE_CANCELLED then

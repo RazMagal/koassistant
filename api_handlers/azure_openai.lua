@@ -22,12 +22,19 @@ function AzureOpenAIHandler:query(message_history, azure_settings )
         azure_settings.api_version
     )
     
-    -- Prepare request body
+    -- Prepare request body. The querier writes the stream toggle to
+    -- additional_parameters.stream, so read it from there (top level kept for
+    -- backward compatibility).
     local requestBodyTable = {
         messages = message_history,
-        max_tokens = azure_settings.max_tokens,
-        stream = azure_settings.stream or false,
-        temperature = azure_settings.temperature or 0.7
+        max_tokens = azure_settings.max_tokens
+            or koutil.tableGetValue(azure_settings, "additional_parameters", "max_tokens"),
+        stream = azure_settings.stream
+            or koutil.tableGetValue(azure_settings, "additional_parameters", "stream")
+            or false,
+        temperature = azure_settings.temperature
+            or koutil.tableGetValue(azure_settings, "additional_parameters", "temperature")
+            or 0.7
     }
     
     local requestBody = json.encode(requestBodyTable)
@@ -40,10 +47,12 @@ function AzureOpenAIHandler:query(message_history, azure_settings )
     if requestBodyTable.stream then
         -- For streaming responses, we need to handle the response differently
         headers["Accept"] = "text/event-stream"
-        return self:backgroundRequest(api_url, headers, requestBody)
+        return self:backgroundRequest(api_url, headers, requestBody,
+            azure_settings.timeout, azure_settings.maxtime)
     end
-    
-    local status, code, response = self:makeRequest(api_url, headers, requestBody)
+
+    local status, code, response = self:makeRequest(api_url, headers, requestBody,
+        azure_settings.timeout, azure_settings.maxtime)
     
     if status then
         local success, responseData = pcall(json.decode, response)
@@ -64,7 +73,7 @@ function AzureOpenAIHandler:query(message_history, azure_settings )
         return nil, response
     end
     
-    return nil, "Error: " .. (code or "unknown") .. " - " .. response
+    return nil, "Error: " .. (code or "unknown") .. " - " .. tostring(response)
 end
 
 return AzureOpenAIHandler

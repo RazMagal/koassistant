@@ -10,11 +10,28 @@ function OpenRouterProvider:query(message_history, openrouter_settings)
     local requestBodyTable = {
         model = openrouter_settings.model,
         messages = message_history,
+        -- Backward compat: top-level values, overridden by additional_parameters below.
         max_tokens = openrouter_settings.max_tokens,
         temperature = openrouter_settings.temperature,
-        stream = koutil.tableGetValue(openrouter_settings, "additional_parameters", "stream") or false,
     }
-    
+
+    -- Copy recognized options from additional_parameters (the sample config puts
+    -- temperature/max_tokens there; matches the openai/deepseek/groq handlers).
+    if openrouter_settings.additional_parameters then
+        for _, option in ipairs({"temperature", "top_p", "max_tokens", "max_completion_tokens",
+                                 "frequency_penalty", "presence_penalty", "stop", "seed",
+                                 "stream", "reasoning_effort", "response_format", "tools"}) do
+            if openrouter_settings.additional_parameters[option] ~= nil then
+                requestBodyTable[option] = openrouter_settings.additional_parameters[option]
+            end
+        end
+    end
+
+    if requestBodyTable.stream == nil then
+        requestBodyTable.stream = false
+    end
+
+
     -- Handle reasoning tokens configuration
     local reasoning = koutil.tableGetValue(openrouter_settings, "additional_parameters", "reasoning")
     if reasoning then
@@ -41,10 +58,12 @@ function OpenRouterProvider:query(message_history, openrouter_settings)
     if requestBodyTable.stream then
         -- For streaming responses, we need to handle the response differently
         headers["Accept"] = "text/event-stream"
-        return self:backgroundRequest(openrouter_settings.base_url, headers, requestBody)
+        return self:backgroundRequest(openrouter_settings.base_url, headers, requestBody,
+            openrouter_settings.timeout, openrouter_settings.maxtime)
     end
-    
-    local status, code, response = self:makeRequest(openrouter_settings.base_url, headers, requestBody)
+
+    local status, code, response = self:makeRequest(openrouter_settings.base_url, headers, requestBody,
+        openrouter_settings.timeout, openrouter_settings.maxtime)
 
     if status then
         local success, responseData = pcall(json.decode, response)
@@ -64,7 +83,7 @@ function OpenRouterProvider:query(message_history, openrouter_settings)
     if code == BaseHandler.CODE_CANCELLED then
         return nil, response
     end
-    return nil, "Error: " .. (code or "unknown") .. " - " .. response
+    return nil, "Error: " .. (code or "unknown") .. " - " .. tostring(response)
 end
 
 return OpenRouterProvider

@@ -16,7 +16,7 @@ function groqHandler:query(message_history, groq_settings)
         --- available req body args: https://console.groq.com/docs/api-reference
         for _, option in ipairs({"temperature", "top_p", "max_completion_tokens", "max_tokens", 
                                     "reasoning_effort", "reasoning_format", "search_settings", "stream"}) do
-            if groq_settings.additional_parameters[option] then
+            if groq_settings.additional_parameters[option] ~= nil then
                 requestBodyTable[option] = groq_settings.additional_parameters[option]
             end
         end
@@ -31,10 +31,12 @@ function groqHandler:query(message_history, groq_settings)
     if requestBodyTable.stream then
         -- For streaming responses, we need to handle the response differently
         headers["Accept"] = "text/event-stream"
-        return self:backgroundRequest(groq_settings.base_url, headers, requestBody)
+        return self:backgroundRequest(groq_settings.base_url, headers, requestBody,
+            groq_settings.timeout, groq_settings.maxtime)
     end
-    
-    local status, code, response = self:makeRequest(groq_settings.base_url, headers, requestBody)
+
+    local status, code, response = self:makeRequest(groq_settings.base_url, headers, requestBody,
+        groq_settings.timeout, groq_settings.maxtime)
     if status then
         local success, responseData = pcall(json.decode, response)
         if success then
@@ -54,7 +56,7 @@ function groqHandler:query(message_history, groq_settings)
         return nil, response
     end
     logger.warn("groq API Error", response)
-    return nil, "Error: " .. (code or "unknown") .. " - " .. response
+    return nil, "Error: " .. (code or "unknown") .. " - " .. tostring(response)
 end
 
 return groqHandler

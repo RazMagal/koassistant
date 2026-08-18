@@ -8,7 +8,7 @@ local DeepSeekHandler = BaseHandler:new()
 function DeepSeekHandler:query(message_history, deepseek_settings)
 
     if not deepseek_settings or not deepseek_settings.api_key then
-        return "Error: Missing API key in configuration"
+        return nil, "Error: Missing API key in configuration"
     end
 
     -- DeepSeek uses OpenAI-compatible API format
@@ -23,7 +23,7 @@ function DeepSeekHandler:query(message_history, deepseek_settings)
         for _, option in ipairs({"temperature", "top_p", "max_tokens", "max_completion_tokens",
                                     "frequency_penalty", "presence_penalty", "stop", "stream",
                                     "thinking", "logprobs", "top_logprobs", "response_format", "tools"}) do
-            if deepseek_settings.additional_parameters[option] then
+            if deepseek_settings.additional_parameters[option] ~= nil then
                 requestBodyTable[option] = deepseek_settings.additional_parameters[option]
             end
         end
@@ -43,7 +43,8 @@ function DeepSeekHandler:query(message_history, deepseek_settings)
     if requestBodyTable.stream then
         -- For streaming responses, we need to handle the response differently
         headers["Accept"] = "text/event-stream"
-        return self:backgroundRequest(deepseek_settings.base_url, headers, requestBody)
+        return self:backgroundRequest(deepseek_settings.base_url, headers, requestBody,
+            deepseek_settings.timeout, deepseek_settings.maxtime)
     end
     
     local request_timeout, request_maxtime

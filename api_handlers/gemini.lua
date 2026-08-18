@@ -8,7 +8,7 @@ local GeminiHandler = BaseHandler:new()
 function GeminiHandler:query(message_history, gemini_settings)
 
     if not gemini_settings or not gemini_settings.api_key then
-        return "Error: Missing API key in configuration"
+        return nil, "Error: Missing API key in configuration"
     end
 
     -- Gemini API requires messages with explicit roles
@@ -17,15 +17,16 @@ function GeminiHandler:query(message_history, gemini_settings)
     local generationConfig = nil
 
     for i, msg in ipairs(message_history) do
+        local text = msg.content or "" -- guard against messages without content
         if msg.role == "system" then
-            system_content = system_content .. msg.content .. "\n"
+            system_content = system_content .. text .. "\n"
         elseif msg.role == "user" then
-            table.insert(contents, { role = "user", parts = {{ text = msg.content }} })
+            table.insert(contents, { role = "user", parts = {{ text = text }} })
         elseif msg.role == "assistant" then
-            table.insert(contents, { role = "model", parts = {{ text = msg.content }} })
+            table.insert(contents, { role = "model", parts = {{ text = text }} })
         else
             -- Fallback for any other roles, mapping to 'user'
-            table.insert(contents, { role = "user", parts = {{ text = msg.content }} })
+            table.insert(contents, { role = "user", parts = {{ text = text }} })
         end
     end
 
@@ -42,6 +43,17 @@ function GeminiHandler:query(message_history, gemini_settings)
 
     local stream = koutil.tableGetValue(gemini_settings, "additional_parameters", "stream") or false
 
+    -- a few more camelCase fields; must be collected before generationConfig is
+    -- attached to the request body, otherwise they are silently dropped
+    if gemini_settings.additional_parameters then
+        for _, option in ipairs({"maxOutputTokens", "temperature", "topP", "topK"}) do
+            if gemini_settings.additional_parameters[option] ~= nil then
+                generationConfig = generationConfig or {}
+                generationConfig[option] = gemini_settings.additional_parameters[option]
+            end
+        end
+    end
+
     local requestBodyTable = {
         contents = contents,
         system_instruction = system_instruction,
@@ -53,15 +65,6 @@ function GeminiHandler:query(message_history, gemini_settings)
         },
         generationConfig = generationConfig
     }
-    -- a few more snake_case fields
-    if gemini_settings.additional_parameters then
-        for _, option in ipairs({"maxOutputTokens", "temperature", "topP", "topK"}) do
-            if gemini_settings.additional_parameters[option] then
-                generationConfig = generationConfig or {}
-                generationConfig[option] = gemini_settings.additional_parameters[option]
-            end
-        end
-    end
 
     local requestBody = json.encode(requestBodyTable)
     
@@ -80,20 +83,25 @@ function GeminiHandler:query(message_history, gemini_settings)
     if stream then
         -- For streaming responses, we need to handle the response differently
         headers["Accept"] = "text/event-stream"
-        return self:backgroundRequest(url, headers, requestBody)
+        return self:backgroundRequest(url, headers, requestBody,
+            gemini_settings.timeout, gemini_settings.maxtime)
     end
-    
-    local success, code, response = self:makeRequest(url, headers, requestBody)
+
+    local success, code, response = self:makeRequest(url, headers, requestBody,
+        gemini_settings.timeout, gemini_settings.maxtime)
     if not success then
         -- Handle user abort case
         if code == BaseHandler.CODE_CANCELLED then
             return nil, response
         end
 
+        -- Hide API key in logs; escape pattern magic characters so the key is
+        -- treated literally (keys contain `-`, and `%`/`[` would break gsub)
+        local api_key_pattern = gemini_settings.api_key:gsub("%W", "%%%0")
         logger.warn("Gemini API request failed:", {
             error = response,
             model = model,
-            base_url = base_url:gsub(gemini_settings.api_key, "***"), -- Hide API key in logs
+            base_url = base_url:gsub(api_key_pattern, "***"),
             request_size = #requestBody,
             message_count = #message_history
         })
