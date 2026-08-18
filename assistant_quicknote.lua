@@ -113,7 +113,8 @@ function QuickNote:saveNote(note_text, highlighted_text)
   elseif processed_note == "" then
     log_entry = string.format("# [%s]%s\n## %s\n\n__%s__ \n%s\n\n", timestamp, page_info, quick_note_lbl, highlighted_text_lbl, processed_highlighted)
   else
-    log_entry = string.format("# [%s]\n## %s\n\n### ⮞ %s \n\n%s\n\n", timestamp, quick_note_lbl, user_lbl, processed_note)
+    -- include page_info like the other branches (it is "" without a selection)
+    log_entry = string.format("# [%s]%s\n## %s\n\n### ⮞ %s \n\n%s\n\n", timestamp, page_info, quick_note_lbl, user_lbl, processed_note)
   end
 
   assistant_utils.saveToNotebookFile(self.assistant, log_entry)

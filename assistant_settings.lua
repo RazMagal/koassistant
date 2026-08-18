@@ -125,7 +125,12 @@ local function LanguageSetting(assistant, close_callback)
 
                         if chkbtn_is_rtl then
                             local checked = chkbtn_is_rtl.checked
-                            if checked ~= (assistant.settings:readSetting("response_is_rtl") or false) then
+                            -- compare against the effective current value (setting,
+                            -- falling back to the UI-language default), or unchecking
+                            -- on an RTL UI language would never be persisted
+                            local current = assistant.settings:readSetting("response_is_rtl")
+                            if current == nil then current = assistant.ui_language_is_rtl end
+                            if checked ~= current then
                                 assistant.settings:saveSetting("response_is_rtl", checked)
                             end
                         end
@@ -143,8 +148,13 @@ local function LanguageSetting(assistant, close_callback)
 
     chkbtn_is_rtl = CheckButton:new{
         text = _("RTL written Language"),
-        face = Font:getFace("xx_smallinfofont"),  
-        checked = assistant.settings:readSetting("response_is_rtl") or assistant.ui_language_is_rtl,
+        face = Font:getFace("xx_smallinfofont"),
+        -- an explicitly saved false must not fall through to the UI-language default
+        checked = (function()
+            local v = assistant.settings:readSetting("response_is_rtl")
+            if v == nil then v = assistant.ui_language_is_rtl end
+            return v
+        end)(),
         parent = langsetting,
     }
     langsetting:addWidget(FrameContainer:new{
@@ -230,9 +240,12 @@ function SettingsDialog:init()
                 if key == self.assistant.querier.provider_name then
                     model_name = self.assistant.querier.provider_settings.model
                 elseif key:sub(1, 10) == "openrouter" then
+                    -- readSetting returns nil (not "") when no override is saved;
+                    -- fall back to THIS provider's configured model, not the
+                    -- currently loaded provider's
                     model_name = self.settings:readSetting("openrouter_model_" .. key)
-                    if model_name == "" then
-                        model_name = self.assistant.querier.provider_settings.model
+                    if model_name == nil or model_name == "" then
+                        model_name = FrontendUtil.tableGetValue(tab, "model")
                     end
                 else
                     model_name = FrontendUtil.tableGetValue(tab, "model")
@@ -277,9 +290,14 @@ function SettingsDialog:init()
         scroll = false,
         parent = self,
         button_select_callback = function(btn)
+            local ok, load_err = self.assistant.querier:load_model(btn.provider)
+            if not ok then
+                -- don't silently persist a provider whose handler failed to load
+                UIManager:show(InfoMessage:new{ icon = "notice-warning", text = load_err })
+                return
+            end
             self.settings:saveSetting("provider", btn.provider)
             self.assistant.updated = true
-            self.assistant.querier:load_model(btn.provider)
             self:updateSelectModelButton()
         end
     }
@@ -359,7 +377,7 @@ function SettingsDialog:onSelectModel()
     UIManager:close(self)
     local NetworkMgr = require("ui/network/manager")
     local url = koutil.tableGetValue(self.assistant.querier, "provider_settings", "base_url")
-    if url ~= "" then
+    if url and url ~= "" then
         url = url:gsub("/chat/.*$", "/models")
         NetworkMgr:runWhenOnline(function()
             local Trapper = require("ui/trapper")
@@ -385,6 +403,14 @@ function SettingsDialog:onCloseWidget()
 end
 
 SettingsDialog.genMenuSettings = function (assistant)
+    -- LuaSettings:toggle() flips an UNSET key to true, so for settings that
+    -- default to true the first tap would appear to do nothing; toggle against
+    -- the effective (defaulted) value instead.
+    local function toggleSetting(key, default)
+        assistant.settings:saveSetting(key, not assistant.settings:readSetting(key, default))
+        assistant.updated = true
+    end
+
     local sub_item_table = {
         {
             text_func = function ()
@@ -426,26 +452,25 @@ SettingsDialog.genMenuSettings = function (assistant)
                     text = _("Enable stream response"),
                     checked_func = function () return assistant.settings:readSetting("use_stream_mode", true) end,
                     callback = function ()
-                        assistant.settings:toggle("use_stream_mode")
-                        assistant.updated = true
+                        toggleSetting("use_stream_mode", true)
                     end
                 },
                 {
                     text = _("Auto scroll stream response text"),
-                    enabled_func = function () return assistant.settings:readSetting("use_stream_mode") end,
+                    -- same default as checked_func, or the sub-items are greyed
+                    -- out on a fresh profile although stream mode is active
+                    enabled_func = function () return assistant.settings:readSetting("use_stream_mode", true) end,
                     checked_func = function () return assistant.settings:readSetting("stream_mode_auto_scroll", true) end,
                     callback = function()
-                        assistant.settings:toggle("stream_mode_auto_scroll")
-                        assistant.updated = true
+                        toggleSetting("stream_mode_auto_scroll", true)
                     end
                 },
                 {
                     text = _("Large Streaming Window"),
-                    enabled_func = function () return assistant.settings:readSetting("use_stream_mode") end,
+                    enabled_func = function () return assistant.settings:readSetting("use_stream_mode", true) end,
                     checked_func = function () return assistant.settings:readSetting("large_stream_dialog", true) end,
                     callback = function()
-                        assistant.settings:toggle("large_stream_dialog")
-                        assistant.updated = true
+                        toggleSetting("large_stream_dialog", true)
                     end
                 },
             }
@@ -473,10 +498,13 @@ SettingsDialog.genMenuSettings = function (assistant)
                         assistant.settings:toggle("enable_auto_recap")
                         assistant.updated = true
                         if not assistant.settings:readSetting("enable_auto_recap") then
-                            -- if disable, remove the action from dispatcher
-                            require("dispatcher"):removeAction("ai_recap")
+                            -- Nothing to uninstall: the doShowReader hook checks
+                            -- this setting at call time. (Removing the `ai_recap`
+                            -- dispatcher action here also nuked gesture bindings.)
                             return
                         end
+                        -- Install the hook now so enabling works without a restart
+                        assistant:_hookRecap()
                         Notification:notify(_("AI Recap will be enabled the next time a long-unread book is opened."), Notification.SOURCE_ALWAYS_SHOW)
                     end
                 },
@@ -484,16 +512,14 @@ SettingsDialog.genMenuSettings = function (assistant)
                     text = _("Show Dictionary(AI) in Dictionary Popup"),
                     checked_func = function () return assistant.settings:readSetting("dict_popup_show_dictionary", true) end,
                     callback = function()
-                        assistant.settings:toggle("dict_popup_show_dictionary")
-                        assistant.updated = true
+                        toggleSetting("dict_popup_show_dictionary", true)
                     end
                 },
                 {
                     text = _("Show Wikipedia(AI) in Dictionary Popup"),
                     checked_func = function () return assistant.settings:readSetting("dict_popup_show_wikipedia", true) end,
                     callback = function()
-                        assistant.settings:toggle("dict_popup_show_wikipedia")
-                        assistant.updated = true
+                        toggleSetting("dict_popup_show_wikipedia", true)
                     end
                 },
                 {
@@ -526,8 +552,7 @@ SettingsDialog.genMenuSettings = function (assistant)
             text = _("Copy entered question to the clipboard"),
             checked_func = function () return assistant.settings:readSetting("auto_copy_asked_question", true) end,
             callback = function()
-                assistant.settings:toggle("auto_copy_asked_question")
-                assistant.updated = true
+                toggleSetting("auto_copy_asked_question", true)
             end
         },
         {

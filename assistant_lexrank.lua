@@ -29,7 +29,9 @@ local CONFIG = get_default_config()
 -- Merge user configuration overrides with defaults
 local function merge_config_overrides(user_config)
     if not user_config then
-        return CONFIG
+        -- always return fresh defaults: returning the module-level CONFIG here
+        -- would leak a previous call's overrides into this call
+        return get_default_config()
     end
 
     local merged = get_default_config()
@@ -288,9 +290,14 @@ end
 -- Prioritizes keeping sentences with named entities to preserve context
 -- Uses pre-cached entity information from entity_tracker
 -- Maintains document order in output
+-- Returns the sampled sentences AND a parallel array mapping each sampled
+-- position to its index in the ORIGINAL tokenization, so callers that index
+-- into their own tokenization of the text get the right sentences back.
 local function sample_large_text(sentences, entity_tracker, max_sentences)
     if #sentences <= max_sentences then
-        return sentences
+        local identity = {}
+        for i = 1, #sentences do identity[i] = i end
+        return sentences, identity
     end
 
     -- First pass: identify sentences with entities using cached results
@@ -322,8 +329,9 @@ local function sample_large_text(sentences, entity_tracker, max_sentences)
     end
 
     -- Sample remaining sentences with step pattern, avoiding duplicates
+    -- (guard: max_non_entity can be 0 when lexrank_max_sentences is tiny)
     local non_entity_sampled = 0
-    local step = math.floor(#sentences / max_non_entity)
+    local step = max_non_entity > 0 and math.floor(#sentences / max_non_entity) or #sentences
     if step < 1 then step = 1 end
 
     for i = 1, #sentences, step do
@@ -336,13 +344,15 @@ local function sample_large_text(sentences, entity_tracker, max_sentences)
 
     -- Build output preserving original document order
     local sampled = {}
+    local original_indices = {}
     for i = 1, #sentences do
         if sampled_set[i] then
             table.insert(sampled, sentences[i])
+            table.insert(original_indices, i)
         end
     end
 
-    return sampled
+    return sampled, original_indices
 end
 
 -- Build TF-IDF weighted similarity matrix between sentences
@@ -476,7 +486,7 @@ end
 -- Select sentences based on scores using statistical thresholds
 -- Applies entity boost to prioritize context about characters and places
 -- Returns table of {sentence, index, score} objects to avoid re-tokenization and enable threshold filtering
-local function select_sentences_by_score(sentences, score_vector, entity_tracker, return_with_metadata)
+local function select_sentences_by_score(sentences, score_vector, entity_tracker, return_with_metadata, original_indices)
     local total_sentences = #sentences
 
     -- Apply entity boosting to scores using cached entity data
@@ -509,10 +519,16 @@ local function select_sentences_by_score(sentences, score_vector, entity_tracker
         avg_score * CONFIG.ALTERNATIVE_THRESHOLD_FACTOR
     )
 
-    -- Build candidate list with metadata
+    -- Build candidate list with metadata. `index` is the sentence's position in
+    -- the ORIGINAL tokenization of the text (pre-sampling), so callers can map
+    -- it back onto their own tokenization of the same text.
     local candidates = {}
     for i = 1, total_sentences do
-        table.insert(candidates, {sentence = sentences[i], score = boosted_scores[i], index = i})
+        table.insert(candidates, {
+            sentence = sentences[i],
+            score = boosted_scores[i],
+            index = original_indices and original_indices[i] or i,
+        })
     end
 
     -- If return_with_metadata is true, return all candidates with their scores for filtering
@@ -532,14 +548,12 @@ local function select_sentences_by_score(sentences, score_vector, entity_tracker
 
     -- If too few sentences, ensure we get at least 70-85% of sentences
     if #selected_sentences < math.floor(total_sentences * CONFIG.MIN_SELECTION_PERCENTAGE) then
-        -- Calculate target count first
-        local target_count = math.max(
-            math.floor(total_sentences * CONFIG.MIN_SELECTION_PERCENTAGE),
-            math.min(
-                math.floor(total_sentences * CONFIG.MAX_SELECTION_PERCENTAGE),
-                math.max(CONFIG.MIN_SENTENCES_TARGET, total_sentences)
-            )
-        )
+        -- Target: between MIN and MAX selection percentage, never fewer than
+        -- MIN_SENTENCES_TARGET, never more than the total available
+        local target_count = math.floor(total_sentences * CONFIG.MAX_SELECTION_PERCENTAGE)
+        target_count = math.max(target_count, math.floor(total_sentences * CONFIG.MIN_SELECTION_PERCENTAGE))
+        target_count = math.max(target_count, CONFIG.MIN_SENTENCES_TARGET)
+        target_count = math.min(target_count, total_sentences)
 
         -- Sort by score descending to get top candidates
         table.sort(candidates, function(a, b) return a.score > b.score end)
@@ -589,14 +603,19 @@ function LexRank.rank_sentences(text, threshold, epsilon, language_code, user_co
     end
 
     if total_sentences == 1 then
+        if return_with_metadata then
+            return {{sentence = sentences[1], score = 1, index = 1}}
+        end
         return {sentences[1]}
     end
 
     -- Track entities before sampling to ensure important entities are preserved
     local entity_tracker = track_entities(sentences, language_module)
 
-    -- Performance optimization for very long texts (pass entity_tracker to use cached entities)
-    sentences = sample_large_text(sentences, entity_tracker, CONFIG.MAX_SENTENCES_FOR_FULL_ANALYSIS)
+    -- Performance optimization for very long texts (pass entity_tracker to use cached entities).
+    -- Keep the mapping back to original sentence indices for the metadata result.
+    local original_indices
+    sentences, original_indices = sample_large_text(sentences, entity_tracker, CONFIG.MAX_SENTENCES_FOR_FULL_ANALYSIS)
     total_sentences = #sentences
 
     -- CRITICAL: Rebuild entity tracker after sampling because indices have changed
@@ -620,7 +639,7 @@ function LexRank.rank_sentences(text, threshold, epsilon, language_code, user_co
     local score_vector = run_power_iteration(similarity_matrix, params.epsilon)
 
     -- Select sentences based on scores with entity boosting
-    return select_sentences_by_score(sentences, score_vector, entity_tracker, return_with_metadata)
+    return select_sentences_by_score(sentences, score_vector, entity_tracker, return_with_metadata, original_indices)
 end
 
 return LexRank

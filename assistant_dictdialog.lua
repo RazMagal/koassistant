@@ -110,7 +110,9 @@ local function filterTextForTerm(text, highlighted_term, language_code, configur
     end
 
     -- Include larger context sentences around matches for better coverage
-    local context_window = koutil.tableGetValue(CONFIGURATION, "features", "term_filter_context_window") or 5 -- sentences before and after
+    -- (use the `configuration` parameter: there is no global CONFIGURATION)
+    local context_window = (configuration
+        and koutil.tableGetValue(configuration, "features", "term_filter_context_window")) or 5 -- sentences before and after
     local selected_indices = {}
 
     for _, idx in ipairs(matching_indices) do
@@ -170,8 +172,9 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
                             local word = input_dialog:getInputText()
                             UIManager:close(input_dialog)
                             if word and word ~= "" then
-                                -- Recursively call with the entered word
-                                showDictionaryDialog(assistant, word, message_history)
+                                -- Recursively call with the entered word, keeping the
+                                -- requested prompt type (e.g. term_xray)
+                                showDictionaryDialog(assistant, word, message_history, prompt_type)
                             end
                         end,
                     },
@@ -287,11 +290,15 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
                     end
                 end
 
-                -- Stage 3: Add remaining candidates for comprehensive coverage
-                for _, candidate in ipairs(all_candidates) do
-                    if not seen_indices[candidate.index] then
-                        table.insert(selected_indices, candidate.index)
-                        seen_indices[candidate.index] = true
+                -- Stage 3 (fallback only): if the thresholds selected nothing, fall
+                -- back to all candidates. Adding the remainder unconditionally would
+                -- make the two threshold settings meaningless.
+                if #selected_indices == 0 then
+                    for _, candidate in ipairs(all_candidates) do
+                        if not seen_indices[candidate.index] then
+                            table.insert(selected_indices, candidate.index)
+                            seen_indices[candidate.index] = true
+                        end
                     end
                 end
             end
@@ -378,20 +385,28 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
 
     -- Choose the appropriate prompt and context based on prompt type
     local user_prompt, context_content, title, loading_message
+    -- Get book information (guarded: no document is open in the FileManager)
+    local book_title, book_author = "Unknown Title", "Unknown Author"
+    if ui.document then
+        local ok_props, prop = pcall(function() return ui.document:getProps() end)
+        if ok_props and prop then
+            book_title = prop.title or book_title
+            book_author = prop.authors or book_author
+        end
+    end
+
+    -- NOTE: the placeholder pattern must be "{([%w_]+)}": plain %w does not match
+    -- underscores, so {context_sentence_count}/{user_input} would never substitute
     if prompt_type == "term_xray" then
         local term_xray_prompts = require("assistant_prompts").custom_prompts.term_xray
         user_prompt = term_xray_prompts.user_prompt
         context_content = context_text
 
-        -- Get book information for term_xray
-        local prop = ui.document:getProps()
-        local book_title = prop.title or "Unknown Title"
-        local book_author = prop.authors or "Unknown Author"
         title = _("Term X-Ray")
         loading_message = _("Loading Term X-Ray ...")
         local context_message = {
             role = "user",
-            content = string.gsub(user_prompt, "{(%w+)}", {
+            content = string.gsub(user_prompt, "{([%w_]+)}", {
                     language = dict_language,
                     context = context_content,
                     context_sentence_count = context_sentence_count,
@@ -409,10 +424,13 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
         loading_message = _("Loading AI Dictionary ...")
         local context_message = {
             role = "user",
-            content = string.gsub(user_prompt, "{(%w+)}", {
+            content = string.gsub(user_prompt, "{([%w_]+)}", {
                     language = dict_language,
                     context = context_content,
-                    word = highlightedText
+                    word = highlightedText,
+                    -- the dict prompts reference {title}/{author} too
+                    title = book_title,
+                    author = book_author
             })
         }
         table.insert(message_history, context_message)
@@ -427,7 +445,9 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
 
     local function createResultText(highlightedText, answer)
         local result_text
-        local render_markdown = koutil.tableGetValue(CONFIGURATION, "features", "render_markdown") or true
+        -- `or true` would make `render_markdown = false` impossible; default only on nil
+        local render_markdown = koutil.tableGetValue(CONFIGURATION, "features", "render_markdown")
+        if render_markdown == nil then render_markdown = true end
         -- Limit prev_context to last 100 characters and next_context to first 100 characters
         local prev_context_limited = string.sub(prev_context, -100)
         local next_context_limited = string.sub(next_context, 1, 100)
@@ -437,8 +457,9 @@ local function showDictionaryDialog(assistant, highlightedText, message_history,
             result_text = T("... %1 **%2** %3 ...\n\n%4", prev_context_limited, highlightedText, next_context_limited, normalized_answer)
         else
             -- in plain text mode, use widget controlled characters.
-            result_text = T("%1... %2%3%4 ...\n\n%5", TextBoxWidget.PTF_HEADER, prev_context_limited, 
-                TextBoxWidget.PTF_BOLD_START, highlightedText, TextBoxWidget.PTF_BOLD_END,  next_context_limited, normalized_answer)
+            -- (placeholders %1..%7 must match the 7 arguments, or the answer is dropped)
+            result_text = T("%1... %2%3%4%5%6 ...\n\n%7", TextBoxWidget.PTF_HEADER, prev_context_limited,
+                TextBoxWidget.PTF_BOLD_START, highlightedText, TextBoxWidget.PTF_BOLD_END, next_context_limited, normalized_answer)
         end
         return result_text
     end

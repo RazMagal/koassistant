@@ -593,8 +593,6 @@ local M = {
     custom_prompts = custom_prompts,       -- Custom prompts for the AI
     assistant_prompts = assistant_prompts, -- Preconfigured prompts for the AI
     merged_prompts = nil,                  -- Merged prompts from custom and configuration
-    sorted_custom_prompts = nil,           -- Sorted custom prompts
-    show_on_main_popup_prompts = nil,      -- Prompts that should be shown on the main popup
 }
 
 -- Func description:
@@ -622,9 +620,9 @@ end
 -- filter_func: optional function to filter prompts, if it returns false, the prompt will be skipped.
 -- return list item: {idx, order, text}
 M.getSortedCustomPrompts = function(filter_func)
-    if M.sorted_custom_prompts then
-        return M.sorted_custom_prompts
-    end
+    -- NOTE: no caching here on purpose — callers pass different filter_func
+    -- (main-popup vs highlight-menu), so one shared cached result would leak
+    -- one filter's selection into the other.
 
     -- Sort the merged prompts by order
     local sorted_prompts = {}

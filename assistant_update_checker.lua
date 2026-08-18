@@ -11,7 +11,9 @@ local T = require("ffi/util").template
 local koutil = require("util")
 local assistant_utils = require("assistant_utils")
 
-local update_url = "https://api.github.com/repos/omer-faruq/assistant.koplugin/releases/latest"
+-- This fork's releases; checking upstream (omer-faruq/assistant.koplugin) would
+-- nag users to "update" onto builds without the fork's offline features.
+local update_url = "https://api.github.com/repos/razmagal/KoAssistant/releases/latest"
 
 local CONFIGURATION = nil
 local meta = nil
@@ -128,7 +130,7 @@ local function checkForUpdates()
     return
   end
   if code ~= 200 then
-    logger.warn()
+    logger.warn("Update check failed, HTTP code:", code, "body:", body)
     Notification:notify(T(_("Failed to check for updates. HTTP code: %1"), code))
     return
   end
@@ -147,7 +149,8 @@ local function checkForUpdates()
     return
   end
 
-  local latest_version_tag = parsed_data and parsed_data.tag_name -- e.g., "v1.08-rc2"
+  -- rapidjson can decode a bare `null` into userdata; only index tables
+  local latest_version_tag = type(parsed_data) == "table" and parsed_data.tag_name -- e.g., "v1.08-rc2"
   if latest_version_tag and meta and meta.version then
     -- Strip optional leading 'v'
     local latest_version_str = latest_version_tag:match("^v?(.*)$")

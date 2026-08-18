@@ -12,7 +12,7 @@ local LibHoedown = nil
 -- check if hoedown is natively available
 -- mostly it's unavailable on KOReader, but available on some other platforms
 local ok, _lib = pcall(ffi.loadlib, "hoedown", 3)
-if ok then Libhoedown = _lib end 
+if ok then LibHoedown = _lib end -- (was a stray global `Libhoedown`, so this path never worked)
 
 -- check if hoedown is available in the plugin directory
 -- in order to use native hoedown, a "lib" directory containing "libhoedown.so.3" and resty-hoedown 
@@ -66,7 +66,9 @@ local function render_tables(html)
 
         if #rows < 3 then return nil end
 
-        if not rows[2]:match("^|?[%s%-:|]+|$") then return nil end
+        -- Separator row: only pipes/dashes/colons/spaces, with at least one dash.
+        -- Both the leading and the trailing pipe are optional (|---|--- is valid).
+        if not (rows[2]:match("^[%s%-:|]+$") and rows[2]:find("%-")) then return nil end
 
         local out = { "<table>" }
 
@@ -75,13 +77,14 @@ local function render_tables(html)
                 -- skip separator row
             else
                 local tag = (i == 1) and "th" or "td"
-                local inner = row:match("^|?(.+)|?$") or ""
+                -- strip one optional leading and trailing pipe, then split on the rest
+                local inner = row:gsub("^%s*|", ""):gsub("|%s*$", "")
                 out[#out + 1] = "<tr>"
                 for cell in (inner .. "|"):gmatch("(.-)|") do
                     local c = cell:match("^%s*(.-)%s*$")
-                    if c ~= "" then
-                        out[#out + 1] = string.format("<%s>%s</%s>", tag, c, tag)
-                    end
+                    -- emit EVERY cell, empty ones included: skipping empties
+                    -- shifted all following columns left
+                    out[#out + 1] = string.format("<%s>%s</%s>", tag, c, tag)
                 end
                 out[#out + 1] = "</tr>"
             end

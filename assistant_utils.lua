@@ -39,9 +39,9 @@ local function extractBookTextForAnalysis(CONFIGURATION, ui)
       else
         -- Extract text from the last n pages up to current reading position for page-based documents
         local current_page = ui.view.state.page
-        local total_pages = ui.document:getPageCount()
         local max_page_size_for_analysis = koutil.tableGetValue(CONFIGURATION, "features", "max_page_size_for_analysis") or 250
-        local start_page = math.max(1, current_page - max_page_size_for_analysis)
+        -- +1: the loop below is inclusive, so without it we'd read n+1 pages
+        local start_page = math.max(1, current_page - max_page_size_for_analysis + 1)
         book_text = ""
         for page = start_page, current_page do
             local page_text = ui.document:getPageText(page) or ""
@@ -171,9 +171,14 @@ end
 
 local function saveToNotebookFile(assistant, log_entry)
   local success, err = pcall(function()
-    local notebookfile = assistant.ui.bookinfo:getNotebookFile(assistant.ui.doc_settings)
+    local notebookfile
     local default_folder = util.tableGetValue(assistant.CONFIGURATION, "features", "default_folder_for_logs")
     if assistant.ui.doc_settings then
+      -- only resolvable with an open document: ui.bookinfo/doc_settings are
+      -- absent in the FileManager, where the general-notebook branch below
+      -- must be reachable (calling this above the guard threw inside the
+      -- pcall and made saving from the FileManager silently fail)
+      notebookfile = assistant.ui.bookinfo:getNotebookFile(assistant.ui.doc_settings)
       if default_folder and default_folder ~= "" then
         if not notebookfile:find("^" .. default_folder:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")) then
           if not util.pathExists(default_folder) then
@@ -252,23 +257,27 @@ local function normalizeMarkdownHeadings(content, heading_offset, max_heading_le
     return content
   end
 
-  local max_heading_level_found = nil
+  -- Shift by the SHALLOWEST heading in the answer: it must land on
+  -- heading_offset + 1. Shifting by the deepest one (as before) produced a
+  -- zero/negative shift whenever the answer contained any deep heading,
+  -- leaving `# Top` rendered larger than the surrounding section titles.
+  local min_heading_level_found = nil
   for line in content:gmatch("[^\n]+") do
     local hashes = line:match("^%s*(#+)")
     if hashes then
       local level = #hashes
-      if not max_heading_level_found or level > max_heading_level_found then
-        max_heading_level_found = level
+      if not min_heading_level_found or level < min_heading_level_found then
+        min_heading_level_found = level
       end
     end
   end
 
-  if not max_heading_level_found then
+  if not min_heading_level_found then
     return content
   end
 
-  local target_max_level = heading_offset + 1
-  local heading_shift = target_max_level - max_heading_level_found
+  local target_top_level = heading_offset + 1
+  local heading_shift = target_top_level - min_heading_level_found
   if heading_shift <= 0 then
     return content
   end
@@ -332,12 +341,43 @@ end
 require("ffi/zlib_h")
 local libz = ffi.loadlib("z", 1)
 
+local bit = require("bit")
+
 local function zlib_uncompress_gzip(gzip_data, max_datalen)
     if #gzip_data < 18 then return nil, "Data truncated" end
+    if gzip_data:byte(1) ~= 0x1f or gzip_data:byte(2) ~= 0x8b then
+        return nil, "Not gzip data (bad magic)"
+    end
 
-    -- 1. Strip the 10-byte Gzip header and the 8-byte Gzip trailer
-    local raw_deflate = gzip_data:sub(11, -9)
-    
+    -- 1. Compute the real header size: 10 fixed bytes plus the optional
+    --    FEXTRA/FNAME/FCOMMENT/FHCRC fields announced by the FLG byte.
+    --    (Assuming a fixed 10-byte header breaks on any origin/proxy that
+    --    emits FNAME, which is common for pre-compressed files.)
+    local flg = gzip_data:byte(4)
+    local offset = 11 -- 1-based index of the first deflate byte
+    if bit.band(flg, 0x04) ~= 0 then -- FEXTRA: 2-byte little-endian length + data
+        if #gzip_data < offset + 1 then return nil, "Data truncated (FEXTRA)" end
+        local xlen = gzip_data:byte(offset) + gzip_data:byte(offset + 1) * 256
+        offset = offset + 2 + xlen
+    end
+    if bit.band(flg, 0x08) ~= 0 then -- FNAME: zero-terminated
+        local z = gzip_data:find("\0", offset, true)
+        if not z then return nil, "Data truncated (FNAME)" end
+        offset = z + 1
+    end
+    if bit.band(flg, 0x10) ~= 0 then -- FCOMMENT: zero-terminated
+        local z = gzip_data:find("\0", offset, true)
+        if not z then return nil, "Data truncated (FCOMMENT)" end
+        offset = z + 1
+    end
+    if bit.band(flg, 0x02) ~= 0 then -- FHCRC: 2 bytes
+        offset = offset + 2
+    end
+    if offset > #gzip_data - 8 then return nil, "Data truncated (no deflate payload)" end
+
+    -- Strip header and the 8-byte Gzip trailer (CRC32 + ISIZE)
+    local raw_deflate = gzip_data:sub(offset, -9)
+
     -- 2. Prepend a valid standard Zlib header (0x78 0x9C)
     local zlib_header = string.char(0x78, 0x9C)
     local hybrid_payload = zlib_header .. raw_deflate
@@ -345,20 +385,28 @@ local function zlib_uncompress_gzip(gzip_data, max_datalen)
     -- 3. Prepare the memory buffers
     local buf = ffi.new("uint8_t[?]", max_datalen)
     local buflen = ffi.new("unsigned long[1]", max_datalen)
-    
+
     -- 4. Invoke the low-level libz
     local res = libz.uncompress(buf, buflen, ffi.cast("const unsigned char*", hybrid_payload), #hybrid_payload)
-    
+
     -- res == 0 means perfect zlib format
     -- res == -3 (Z_DATA_ERROR) happens here because the tail has a Gzip CRC32 instead of Zlib Adler32.
     -- But since the Deflate payload itself is 100% correct, the bytes in 'buf' are ALREADY completely deflated!
     if res == 0 or res == -3 then
-        local actual_len = buflen[0]
+        local actual_len = tonumber(buflen[0])
+        -- Cross-check against the trailer's ISIZE (uncompressed size mod 2^32):
+        -- zlib < 1.2.9 does not update buflen on error, which would otherwise
+        -- return max_datalen bytes of trailing NULs on a corrupt payload.
+        local isize = gzip_data:byte(-4) + gzip_data:byte(-3) * 256
+            + gzip_data:byte(-2) * 65536 + gzip_data:byte(-1) * 16777216
+        if isize > 0 and isize <= max_datalen then
+            actual_len = math.min(actual_len, isize)
+        end
         if actual_len > 0 then
             return ffi.string(buf, actual_len)
         end
     end
-    
+
     return nil, "Zlib core uncompress failed with severe code: " .. tostring(res)
 end
 

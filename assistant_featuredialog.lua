@@ -39,7 +39,9 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         local custom_config = feature_type
         feature_title = custom_config.text or _("Custom Prompt")
         loading_message = custom_config.loading_message or _("Loading...")
+        -- user-supplied book-level prompts may omit these; fall back instead of crashing
         system_prompt = custom_config.system_prompt
+            or koutil.tableGetValue(assistant_prompts, "default", "system_prompt")
         user_prompt_template = custom_config.user_prompt
 
         -- Handle use flags
@@ -128,11 +130,18 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         end
     end
 
+    if not user_prompt_template then
+        UIManager:show(InfoMessage:new{ icon = "notice-warning",
+            text = T(_("The prompt '%1' has no user_prompt defined in the configuration."), feature_title) })
+        return
+    end
+    system_prompt = system_prompt or koutil.tableGetValue(assistant_prompts, "default", "system_prompt") or ""
+
     if assistant.settings:readSetting("auto_prompt_suggest", false) then
-      local suggestions_prompt = assistant_prompts.suggestions_prompt:gsub("{(%w+)}", {language = language})
+      local suggestions_prompt = assistant_prompts.suggestions_prompt:gsub("{([%w_]+)}", {language = language})
       system_prompt = system_prompt .. suggestions_prompt
     end
-    
+
     local book_text_prompt = ""
     if book_text then
         book_text_prompt = string.format("\n\n[! IMPORTANT !] Here is the book text up to my current position, only consider this text for your response:\n [BOOK TEXT BEGIN]\n%s\n[BOOK TEXT END]", book_text)
@@ -150,8 +159,9 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         },
     }
     
-    -- Format the user prompt with variables
-    local user_content = user_prompt_template:gsub("{(%w+)}", {
+    -- Format the user prompt with variables ([%w_]+ so {user_input}-style
+    -- placeholders with underscores are matched too)
+    local user_content = user_prompt_template:gsub("{([%w_]+)}", {
       title = title,
       author = author,
       progress = formatted_progress_percent,
@@ -207,12 +217,9 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
       disable_add_note = true,
       message_history = message_history,
       onAskQuestion = function(viewer, user_question)
-        local viewer_title = ""
-
         if type(user_question) == "string" then
           prepareMessageHistoryForAdditionalQuestion(message_history, user_question, title, author)
         elseif type(user_question) == "table" then
-          viewer_title = user_question.text or "Custom Prompt"
           table.insert(message_history, {
             role = "user",
             content = string.format("I'm reading something titled '%s' by %s. Only answer the following question, do not add any additional information or context that is not directly related to the question, the question is: %s", title, author, user_question.user_prompt or user_question)
@@ -220,21 +227,25 @@ local function showFeatureDialog(assistant, feature_type, title, author, progres
         end
 
         viewer:trimMessageHistory()
-        NetworkMgr:runWhenOnline(function()
+        assistant:runWhenOnline(function()
           Trapper:wrap(function()
             local answer, err = Querier:query(message_history)
-            
+
             if err then
+              -- roll the failed user turn back out of the history, or the next
+              -- question ships two consecutive `user` messages (rejected by
+              -- strict-alternation providers)
+              table.remove(message_history)
               Querier:showError(err)
               return
             end
-            
+
             table.insert(message_history, {
               role = "assistant",
               content = answer
             })
             local normalized_answer = normalizeMarkdownHeadings(answer, 3, 6) or answer
-            local additional_text = "\n\n### ⮞ User: \n" .. (type(user_question) == "string" and user_question or (user_question.text or user_question)) .. "\n\n### ⮞ Assistant:\n" .. normalized_answer
+            local additional_text = "\n\n### ⮞ User: \n" .. (type(user_question) == "string" and user_question or (user_question.text or "Custom Prompt")) .. "\n\n### ⮞ Assistant:\n" .. normalized_answer
             viewer:update(viewer.text .. additional_text)
             
             if viewer.scroll_text_w then

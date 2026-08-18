@@ -236,8 +236,13 @@ function ChatGPTViewer:init()
     }
   end
 
-  -- If another ChatGPTViewer is open, close it
+  -- If another ChatGPTViewer is open, close it.
+  -- UIManager:close() skips onClose(), so run the auto-save it would have done.
   if active_chatgpt_viewer and active_chatgpt_viewer ~= self then
+    if active_chatgpt_viewer.assistant
+        and active_chatgpt_viewer.assistant.settings:readSetting("auto_save_to_notebook", false) then
+      pcall(function() active_chatgpt_viewer:saveToNotebook() end)
+    end
     UIManager:close(active_chatgpt_viewer)
   end
   
@@ -374,6 +379,12 @@ function ChatGPTViewer:init()
       return {
           text = _("Add Note"),
           callback = function()
+              -- Honor a caller-provided handler (e.g. the dictionary dialog
+              -- passes a correctly-guarded onAddToNote)
+              if self.onAddToNote then
+                  self.onAddToNote()
+                  return
+              end
               -- Check if ui is available in self
               local ui = self.ui
               if not ui or not ui.highlight then
@@ -397,23 +408,23 @@ function ChatGPTViewer:init()
               -- Get the selected text
               local selected_text = self.highlighted_text or ""
               
-              -- Remove the selected text from the full text with multiple strategies
+              -- Remove the selected text from the full text
               local note_text = self.text
-              
-              -- First, try to remove only if the selected text is after "Highlighted text: "
-              local highlighted_start, highlighted_end = note_text:find('Highlighted text: "([^"]*)"')
-              if highlighted_start then
-                  local highlighted_part = note_text:sub(highlighted_start, highlighted_end)
-                  local selected_text_in_highlight = highlighted_part:match('"([^"]*)"')
-                  
-                  if selected_text_in_highlight == selected_text then
-                      note_text = note_text:gsub('Highlighted text: "' .. selected_text:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1") .. '"', "")
+
+              -- Strip the highlighted-text header the dialog actually produces:
+              -- __<translated label>__"<highlight>" (the old 'Highlighted text: "..."'
+              -- literal never matched in any locale)
+              if selected_text ~= "" then
+                  local escape = function(s)
+                      return s:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
                   end
+                  local header_pattern = escape(string.format('__%s__"%s"', _("Highlighted text:"), selected_text))
+                  note_text = note_text:gsub(header_pattern, "", 1)
               end
-              
+
               -- Trim whitespace
               note_text = note_text:gsub("^%s+", ""):gsub("%s+$", "")
-                            
+
               if note_text == "" then
                   UIManager:show(InfoMessage:new{
                       icon = "notice-warning",
@@ -422,13 +433,33 @@ function ChatGPTViewer:init()
                   })
                   return
               end
-              
-              local index = ui.highlight:saveHighlight(true)
+
+              -- saveHighlight returns nothing without an active selection
+              -- (e.g. tap-to-lookup path); do not crash in that case
+              local success, index = pcall(function()
+                  return ui.highlight:saveHighlight(true)
+              end)
+              if not success or not index or not ui.annotation then
+                  UIManager:show(InfoMessage:new{
+                      icon = "notice-warning",
+                      text = _("Could not add note: no active highlight."),
+                      timeout = 2
+                  })
+                  return
+              end
               local a = ui.annotation.annotations[index]
+              if not a then
+                  UIManager:show(InfoMessage:new{
+                      icon = "notice-warning",
+                      text = _("Could not add note: no active highlight."),
+                      timeout = 2
+                  })
+                  return
+              end
               a.note = note_text
-              ui:handleEvent(Event:new("AnnotationsModified", 
+              ui:handleEvent(Event:new("AnnotationsModified",
                                       { a, nb_highlights_added = -1, nb_notes_added = 1 }))
-              
+
               UIManager:show(InfoMessage:new{
                   text = _("Note added successfully"),
                   timeout = 2
@@ -470,8 +501,15 @@ function ChatGPTViewer:init()
   local textw_height = self.height - titlebar:getHeight() - self.button_table:getSize().h
 
 
-  -- load configuration
-  self.render_markdown = util.tableGetValue(self.assistant.CONFIGURATION, "features", "render_markdown") or true
+  -- load configuration; keep a value passed in by the caller, default to true
+  -- only when neither the caller nor the config set it (`or true` would make
+  -- `render_markdown = false` impossible)
+  if self.render_markdown == nil then
+    self.render_markdown = util.tableGetValue(self.assistant.CONFIGURATION, "features", "render_markdown")
+  end
+  if self.render_markdown == nil then
+    self.render_markdown = true
+  end
 
   if self.render_markdown then
     -- Convert Markdown to HTML and render in a ScrollHtmlWidget
@@ -481,8 +519,10 @@ function ChatGPTViewer:init()
       -- Fallback to plain text if HTML generation fails
       html_body = self.text or "Missing text."
     end
-    local css = VIEWER_CSS .. ((self.assistant.settings:readSetting("response_is_rtl") 
-                                or self.assistant.ui_language_is_rtl) and RTL_CSS or "")
+    -- an explicit response_is_rtl=false must win over the UI-language default
+    local is_rtl = self.assistant.settings:readSetting("response_is_rtl")
+    if is_rtl == nil then is_rtl = self.assistant.ui_language_is_rtl end
+    local css = VIEWER_CSS .. (is_rtl and RTL_CSS or "")
     self.scroll_text_w = ScrollHtmlWidget:new {
       html_body = html_body,
       css = css,
@@ -574,7 +614,9 @@ function ChatGPTViewer:saveToNotebook()
   local text_to_log = self.text or ""
     
   if self.highlighted_text then
-    local highlighted_pattern = "^__([^⮞]-)__.-(\n?### ⮞)"
+    -- NOTE: [^⮞] would be a byte class (⮞ is multi-byte), breaking on any
+    -- other U+2xxx character in the text; a non-greedy dot works correctly
+    local highlighted_pattern = "^__(.-)__.-(\n?### ⮞)"
     text_to_log = text_to_log:gsub(highlighted_pattern, "%2", 1)
     
     local processed_highlighted = ""
@@ -593,6 +635,12 @@ function ChatGPTViewer:saveToNotebook()
 end
 
 function ChatGPTViewer:onCloseWidget()
+  -- Cancel the delayed scroll from update(), it must not run on a closed widget
+  if self._delayed_scroll_task then
+    UIManager:unschedule(self._delayed_scroll_task)
+    self._delayed_scroll_task = nil
+  end
+
   -- Reset all history and context
   self.text = ""
   self.message_history = nil
@@ -614,9 +662,11 @@ function ChatGPTViewer:onCloseWidget()
 end
 
 function ChatGPTViewer:askAnotherQuestion(simple_mode)
-  -- Prevent multiple dialogs
-  if self.input_dialog and self.input_dialog.dialog_open then
-    return
+  -- Prevent stacked dialogs: close a previous one instead of orphaning it
+  -- (the old `dialog_open` guard checked a field that is never set anywhere)
+  if self.input_dialog then
+    UIManager:close(self.input_dialog)
+    self.input_dialog = nil
   end
 
   -- Initialize default options
@@ -628,7 +678,8 @@ function ChatGPTViewer:askAnotherQuestion(simple_mode)
       return false
     end
     -- Exclude stub prompts (dictionary) button in follow up questions
-    if prompt.order < 0 then
+    -- (`order` is optional in user-defined prompts)
+    if (prompt.order or 1000) < 0 then
       return false
     end
     return true
@@ -767,10 +818,14 @@ end
 -- close all active dialog back to the reading UI
 function ChatGPTViewer:HoldClose()
   self:onClose()
-  if self.assistant.ui.dictionary.dict_window then
-    self.assistant.ui.dictionary.dict_window:onClose()
+  -- dictionary/highlight are reader-only modules; absent in the FileManager
+  local ui = self.assistant and self.assistant.ui
+  if ui and ui.dictionary and ui.dictionary.dict_window then
+    ui.dictionary.dict_window:onClose()
   end
-  self.assistant.ui.highlight:onClose()
+  if ui and ui.highlight then
+    ui.highlight:onClose()
+  end
 end
 
 function ChatGPTViewer:onShow()
@@ -781,19 +836,8 @@ function ChatGPTViewer:onShow()
 end
 
 function ChatGPTViewer:onTapClose(arg, ges_ev)
-  if self.button_table then
-    for _, button_row in ipairs(self.button_table.buttons) do
-      for _, button in ipairs(button_row) do
-        if button.id == "close" and button.dimen then
-          if ges_ev.pos:intersectWith(button.dimen) then
-            self:onClose()
-            return true
-          end
-        end
-      end
-    end
-  end
-  
+  -- (the close Button's own callback handles taps on it; ButtonTable.buttons
+  -- holds definitions without dimen, so a hit test here can never match)
   if ges_ev.pos:notIntersectWith(self.frame.dimen) then
     self:onClose()
     return true
@@ -921,10 +965,21 @@ function ChatGPTViewer:trimMessageHistory()
   -- TODO: Make this configurable in the settings dialog
   local MAX_ROUNDS = 3
 
+  -- Preserve the whole first round, up to and including the FIRST assistant
+  -- reply. The history may be [system, user, assistant] or, for plain
+  -- questions, [system, context, question, assistant] — so the boundary must
+  -- be found, not assumed to be index 3.
+  local first_assistant_index
+  for i = 1, #self.message_history do
+    if self.message_history[i].role == "assistant" then
+      first_assistant_index = i
+      break
+    end
+  end
+  if not first_assistant_index then return end
+
   local assistant_msg_indices = {}
-  -- Preserve the first round: System prompt (1), User1 (2), Assistant1 (3)
-  -- Start collecting assistant messages from index 4 to skip the first assistant response
-  for i = 4, #self.message_history do
+  for i = first_assistant_index + 1, #self.message_history do
     if self.message_history[i].role == "assistant" then
       table.insert(assistant_msg_indices, i)
     end
@@ -935,10 +990,9 @@ function ChatGPTViewer:trimMessageHistory()
     local num_rounds_to_remove = #assistant_msg_indices - (MAX_ROUNDS - 1)
     -- The index of the last assistant message of the last round to be removed.
     local last_assistant_msg_index_to_remove = assistant_msg_indices[num_rounds_to_remove]
-    -- Preserve first round (indices 1-3), remove from index 4 onwards
-    local num_messages_to_remove = last_assistant_msg_index_to_remove - 3
+    local num_messages_to_remove = last_assistant_msg_index_to_remove - first_assistant_index
     for _ = 1, num_messages_to_remove do
-      table.remove(self.message_history, 4)
+      table.remove(self.message_history, first_assistant_index + 1)
     end
   end
 end
@@ -971,8 +1025,10 @@ function ChatGPTViewer:update(new_text)
         -- Fallback to plain text if HTML generation fails
         html_body = self.text or "Missing text."
       end
-      local css = VIEWER_CSS .. ((self.assistant.settings:readSetting("response_is_rtl") 
-                                or self.assistant.ui_language_is_rtl) and RTL_CSS or "")
+      -- an explicit response_is_rtl=false must win over the UI-language default
+      local is_rtl = self.assistant.settings:readSetting("response_is_rtl")
+      if is_rtl == nil then is_rtl = self.assistant.ui_language_is_rtl end
+      local css = VIEWER_CSS .. (is_rtl and RTL_CSS or "")
       self.scroll_text_w = ScrollHtmlWidget:new {
         html_body = html_body,
         css = css,
@@ -1002,16 +1058,25 @@ function ChatGPTViewer:update(new_text)
       }
     end
     
-    -- Update the frame container with the new scroll widget
+    -- Update the frame container with the new scroll widget.
+    -- textw:clear() only detaches the child; free the old widget explicitly or
+    -- every follow-up answer leaks a mupdf document handle + blitbuffer.
+    local old_widget = self.textw[1]
     self.textw:clear()
+    if old_widget and old_widget ~= self.scroll_text_w and type(old_widget.free) == "function" then
+      pcall(function() old_widget:free() end)
+    end
     self.textw[1] = self.scroll_text_w
-    
+
     if self.render_markdown then
       self.scroll_text_w:scrollToPage(1)
-      UIManager:scheduleIn(0.25, function ()
+      -- keep a reference so onCloseWidget can unschedule it if the viewer is
+      -- closed within the delay
+      self._delayed_scroll_task = function ()
         -- a delay scroll makes the scroll bar in correct position
         self.scroll_text_w:scrollToPage(last_page_num)
-      end)
+      end
+      UIManager:scheduleIn(0.25, self._delayed_scroll_task)
     else
       self.scroll_text_w:scrollToBottom()
       UIManager:setDirty(self.frame, "partial")

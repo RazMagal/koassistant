@@ -63,17 +63,33 @@ function Querier:load_model(provider_name)
         handler_name = provider_name -- original name
     end
 
-    -- Load the handler based on the provider name
+    -- Load the handler: prefer an exact module match (so `azure_openai` finds
+    -- api_handlers/azure_openai.lua), then fall back to the part before the
+    -- first underscore (`openai_local` -> openai).
     local success, handler = pcall(function()
-        return require("api_handlers." .. handler_name)
+        return require("api_handlers." .. provider_name)
     end)
+    if success then
+        handler_name = provider_name
+    else
+        success, handler = pcall(function()
+            return require("api_handlers." .. handler_name)
+        end)
+    end
     if success then
         self.handler = handler
         self.handler_name = handler_name
-        -- Shallow copy to avoid mutating CONFIGURATION
+        -- Copy (one level deep) to avoid mutating CONFIGURATION: the stream toggle
+        -- is written into additional_parameters on every query
         self.provider_settings = {}
         for k, v in pairs(provider_settings) do
-            self.provider_settings[k] = v
+            if type(v) == "table" then
+                local copy = {}
+                for k2, v2 in pairs(v) do copy[k2] = v2 end
+                self.provider_settings[k] = copy
+            else
+                self.provider_settings[k] = v
+            end
         end
         self.provider_name = provider_name
         -- Apply saved OpenRouter model override
@@ -171,6 +187,10 @@ function Querier:query(message_history, title)
         return nil, _("Plugin is not configured.")
     end
 
+    -- Reset per-query state: a cancelled non-stream query must not leave this set,
+    -- or every later error is shown as a brief toast instead of the error dialog
+    self.user_interrupted = false
+
     local use_stream_mode = self.settings:readSetting("use_stream_mode", true)
     koutil.tableSetValue(self.provider_settings, use_stream_mode, "additional_parameters", "stream")
 
@@ -183,23 +203,33 @@ function Querier:query(message_history, title)
     UIManager:show(infomsg)
 
     self.handler:setTrapWidget(infomsg)
-    local res, err = self.handler:query(trimMessageHistory(message_history), self.provider_settings)
+    -- pcall so an error inside a handler cannot strand the InfoMessage on screen
+    -- and leave a stale trap widget that poisons the next query
+    local query_ok, res, err = pcall(self.handler.query, self.handler,
+        trimMessageHistory(message_history), self.provider_settings)
     self.handler:resetTrapWidget()
 
     UIManager:close(infomsg)
 
+    if not query_ok then
+        logger.warn("Handler error:", res)
+        return nil, "Error: " .. tostring(res)
+    end
+
     -- when res is a function, it means we are in streaming mode
     -- open a stream dialog and run the background query in a subprocess
     if type(res) == "function" then
-        self.user_interrupted = false -- reset the stream interrupted flag
         local streamDialog
-        local animation_task = nil -- Will be set during animation setup
+        -- NOTE: UIManager:scheduleIn returns nothing; tasks must be unscheduled by
+        -- function reference. The flag also stops a task that already fired.
+        local animation_stopped = false
+        local updateAnimation -- forward declaration, defined during animation setup
 
         local function _closeStreamDialog()
             if self.interrupt_stream then self.interrupt_stream() end
-            if animation_task then
-                UIManager:unschedule(animation_task)
-                animation_task = nil
+            animation_stopped = true
+            if updateAnimation then
+                UIManager:unschedule(updateAnimation)
             end
             UIManager:close(streamDialog)
         end
@@ -257,13 +287,12 @@ function Querier:query(message_history, title)
 
         -- Start animation
         streamDialog._input_widget:setText(animation:getNextFrame(), true)
-        local function updateAnimation()
-            if not first_content_received then
-                streamDialog._input_widget:setText(animation:getNextFrame(), true)
-                animation_task = UIManager:scheduleIn(0.4, updateAnimation)
-            end
+        updateAnimation = function()
+            if animation_stopped or first_content_received then return end
+            streamDialog._input_widget:setText(animation:getNextFrame(), true)
+            UIManager:scheduleIn(0.4, updateAnimation)
         end
-        animation_task = UIManager:scheduleIn(0.4, updateAnimation)
+        UIManager:scheduleIn(0.4, updateAnimation)
 
         local stream_mode_auto_scroll = self.settings:readSetting("stream_mode_auto_scroll", true)
         local ok, content, err = pcall(self.processStream, self, res, function (content, buffer)
@@ -271,10 +300,7 @@ function Querier:query(message_history, title)
                 -- Stop animation on first content
                 if not first_content_received and content and #tostring(content) > 0 then
                     first_content_received = true
-                    if animation_task then
-                        UIManager:unschedule(animation_task)
-                        animation_task = nil
-                    end
+                    UIManager:unschedule(updateAnimation)
                     streamDialog._input_widget:setText("", true) -- Clear the animation
                 end
 
@@ -294,6 +320,10 @@ function Querier:query(message_history, title)
             err = content -- content contains the error message
         end
 
+        -- Make sure the animation never outlives the dialog (e.g. stream ended
+        -- with an error before the first token arrived)
+        animation_stopped = true
+        UIManager:unschedule(updateAnimation)
         UIManager:close(streamDialog)
 
         if self.user_interrupted then
@@ -301,7 +331,7 @@ function Querier:query(message_history, title)
         end
 
         if err then
-            return nil, err:gsub("^[\n%s]*", "") -- clean leading spaces and newlines
+            return nil, tostring(err):gsub("^[\n%s]*", "") -- clean leading spaces and newlines
         end
 
         res = content
@@ -315,7 +345,7 @@ function Querier:query(message_history, title)
     if type(res) ~= "string" or err ~= nil then
         return nil, tostring(err)
     elseif #res == 0 then
-        return nil, _("No response received.") .. (err and tostring(err) or "")
+        return nil, _("No response received.")
     end
     return res
 end
@@ -433,17 +463,25 @@ function Querier:processStream(bgQuery, trunk_callback)
                     elseif line:sub(1, 1) == ":" then
                         -- SSE empty events, nothing to do
                     elseif line:sub(1, 1) == "{" then
-                        -- If the line starts with '{', it might be a JSON object
+                        -- A bare JSON line: either an NDJSON stream chunk from Ollama's
+                        -- native /api/chat endpoint, or a whole-body error object
                         local ok, j = pcall(rapidjson.decode, line, {null=nil})
                         if ok and j then
-                            -- log the json
+                            local ndjson_content = koutil.tableGetValue(j, "message", "content")
                             local err_message = koutil.tableGetValue(j, "error", "message")
-                            if err_message then
+                            local err_value = koutil.tableGetValue(j, "error")
+                            if type(ndjson_content) == "string" and #ndjson_content > 0 then
+                                -- Ollama native streaming chunk
+                                table.insert(result_buffer, ndjson_content)
+                                if trunk_callback then trunk_callback(ndjson_content, result_buffer) end
+                            elseif err_message then
                                 table.insert(result_buffer, err_message)
-                            end
-
-                            if trunk_callback then
-                                trunk_callback(line)  -- Output to trunk callback
+                            elseif type(err_value) == "string" then
+                                -- Ollama native errors are {"error":"..."}
+                                table.insert(result_buffer, err_value)
+                            else
+                                -- unknown JSON object (e.g. a final "done" chunk): log,
+                                -- but don't dump raw JSON into the answer
                                 logger.info("JSON object received:", line)
                             end
                         else

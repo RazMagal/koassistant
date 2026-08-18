@@ -74,7 +74,7 @@ local CONFIGURATION = {
             api_key = "your-gemini-api-key",
             additional_parameters = {
                 temperature = 0.7,
-                max_tokens = 1048576,
+                maxOutputTokens = 1048576, -- native Gemini key (the handler ignores `max_tokens`)
                 -- Set to 0 to disable thinking. Recommended for gemini-2.5-* and newer, where thinking is enabled by default.
                 thinking_budget = 0
             }
@@ -145,34 +145,31 @@ local CONFIGURATION = {
             -- Automatically detects API type and filters out <thought> tags from Gemma 4 models
             -- (Gemma 2 models don't have this issue, but handler is safe for both)
             
-            -- Option 1: Google's OpenAI-compatible API (Recommended for Gemma 4)
-            -- Note: Both endpoints work: /v1beta/openai/ or /v1beta/chat/completions
+            -- Option 1: Google's OpenAI-compatible API (Recommended for Gemma 4).
+            -- The URL must include the full POST path (the handler posts to it verbatim).
             visible = false,                   -- optional, if set to false, will not shown in the profile switch
             model = "gemma-4-31b-it",
-            base_url = "https://generativelanguage.googleapis.com/v1beta/openai/",   -- Alternative: base_url = "https://generativelanguage.googleapis.com/v1beta/chat/completions",
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
             api_key = "your-gemini-api-key",
             additional_parameters = {
                 temperature = 0.3,
                 max_tokens = 500  -- Use "max_tokens" for OpenAI-compatible format
-            }
-            
-            -- Option 2: Ollama or other OpenAI-compatible API (for Gemma 2)
+            },
+
+            -- Option 2: Ollama or other OpenAI-compatible API (for Gemma 2).
+            -- REPLACE the model/base_url/api_key/additional_parameters values
+            -- above with these (don't uncomment them as extra keys):
             -- model = "gemma-2-9b-it",
             -- base_url = "http://localhost:11434/v1/chat/completions",
             -- api_key = "gemma",
-            -- additional_parameters = {
-            --     temperature = 0.7,
-            --     max_tokens = 4096
-            -- }
-            
-            -- Option 3: Native Gemini API format (alternative)
+            -- additional_parameters = { temperature = 0.7, max_tokens = 4096 },
+
+            -- Option 3: Native Gemini API format (alternative).
+            -- REPLACE the values above with these:
             -- model = "gemma-4-31b-it",
             -- base_url = "https://generativelanguage.googleapis.com/v1beta/models/",
             -- api_key = "your-gemini-api-key",
-            -- additional_parameters = {
-            --     temperature = 0.3,
-            --     maxOutputTokens = 500  -- Use "maxOutputTokens" for native Gemini format
-            -- }
+            -- additional_parameters = { temperature = 0.3, maxOutputTokens = 500 }, -- "maxOutputTokens" for native Gemini format
         },
         openai_perplexity = {
             visible = false,                   -- optional, if set to false, will not shown in the profile switch
@@ -213,9 +210,12 @@ local CONFIGURATION = {
         --
         -- Full setup guide (which app, which model, e-ink tips): docs/OFFLINE_MODELS.md
         --
-        -- Because on-device inference is slow, these configs raise the request timeouts
-        -- (the default is a 120s total cap, which cuts off longer answers) and turn on
-        -- stream mode via the Settings dialog is recommended so tokens appear as they come.
+        -- Because on-device inference is slow, these configs raise the request
+        -- timeouts (without them, the default total cap — 45s for small requests,
+        -- 300s for large book analyses — cuts off longer answers). The per-provider
+        -- `timeout`/`maxtime` fields are honored in both stream and non-stream mode.
+        -- Stream mode is ON by default; the toggle lives under
+        -- AI Assistant → AI Assistant Settings → Stream Mode Settings → "Enable stream response".
         -- ────────────────────────────────────────────────────────────────────────────
 
         -- llama.cpp `llama-server` running ON the Boox in Termux (fully offline).
@@ -249,7 +249,8 @@ local CONFIGURATION = {
         },
 
         -- Ollama running locally (on-device in Termux, or on a LAN machine).
-        -- Uses the OpenAI-compatible /v1/chat/completions endpoint Ollama exposes.
+        -- Uses the OpenAI-compatible /v1/chat/completions endpoint Ollama exposes;
+        -- the native http://127.0.0.1:11434/api/chat endpoint works too.
         ollama_local = {
             visible = false,
             model = "qwen2.5:1.5b",   -- must match a model you've `ollama pull`ed
@@ -318,13 +319,16 @@ local CONFIGURATION = {
         term_xray_context_sentences_before = 5, -- Number of sentences to include BEFORE matching sentences for context (captures descriptions, setup)
         term_xray_context_sentences_after = 5,  -- Number of sentences to include AFTER matching sentences for context (captures effects, consequences)
         -- These settings help capture pronouns (he/she/it/that) and narrative context that the LLM needs for complete analysis
-        -- Increase to 3+ for complex magic systems or concepts; decrease to 1 for quick summaries
+        -- Raise above 5 for complex magic systems or concepts; lower toward 1 for quick summaries
         -- Example: For "the Ring", before context captures "The Dark Lord had created..." and after captures "...His mind began to cloud"
 
         -- LexRank algorithm configuration for intelligent context selection
         -- LexRank scores sentences based on importance and relevance to identify key content.
-        -- Suggested values: 1000-2000 (process quickly), 2500 (recommended), 5000+ (exhaustive analysis)
-        lexrank_max_sentences = 2500,
+        -- The code default (when unset) is 200. LexRank builds an N×N similarity
+        -- matrix on the UI thread, so large values are SLOW and memory-hungry on
+        -- e-ink devices: 200 ≈ instant, 1000 ≈ noticeable pause, 2500+ ≈ minutes
+        -- of frozen UI and tens of MB of RAM. Raise only on fast hardware.
+        lexrank_max_sentences = 200,
 
         -- What percentage of high-ranking sentences should be selected? Higher = more inclusive.
         -- 0.70 (70%): Conservative, quality-focused sentences only

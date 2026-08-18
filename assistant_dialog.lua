@@ -41,8 +41,11 @@ end
 
 function AssistantDialog:_close()
   if self.input_dialog then
-    UIManager:close(self.input_dialog)
+    -- nil the field before closing: close_callback/dismiss_callback re-enter
+    -- this method, so clearing first prevents a double close
+    local dialog = self.input_dialog
     self.input_dialog = nil
+    UIManager:close(dialog)
   end
 end
 
@@ -92,22 +95,25 @@ function AssistantDialog:_createResultText(highlightedText, message_history, pre
         user_message = string.format("%s\n\n", title)
         -- Check if user input is available
         if message.user_input and message.user_input ~= "" then
-          if message.user_input:find("%[BOOK TEXT BEGIN%]") then
-            message.user_input = message.user_input:gsub("%[BOOK TEXT BEGIN%].*%[BOOK TEXT END%]", "[BOOK TEXT]")
+          -- Redact into a local copy (don't mutate the stored history), and use
+          -- a non-greedy match so text between two blocks is not swallowed
+          local user_input = message.user_input
+          if user_input:find("%[BOOK TEXT BEGIN%]") then
+            user_input = user_input:gsub("%[BOOK TEXT BEGIN%].-%[BOOK TEXT END%]", "[BOOK TEXT]")
           end
-          if message.user_input:find("%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT BEGIN%]") then
-            message.user_input = message.user_input:gsub("%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT BEGIN%].*%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT END%]", "[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT]")
+          if user_input:find("%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT BEGIN%]") then
+            user_input = user_input:gsub("%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT BEGIN%].-%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT END%]", "[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT]")
           end
-          user_message = user_message .. message.user_input .. "\n\n"
+          user_message = user_message .. user_input .. "\n\n"
         end
       else
         -- shows user input prompt
         local content = message.content or _("(Empty message)")
         if content:find("%[BOOK TEXT BEGIN%]") then
-          content = content:gsub("%[BOOK TEXT BEGIN%].*%[BOOK TEXT END%]", "[BOOK TEXT]")
+          content = content:gsub("%[BOOK TEXT BEGIN%].-%[BOOK TEXT END%]", "[BOOK TEXT]")
         end
         if content:find("%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT BEGIN%]") then
-          content = content:gsub("%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT BEGIN%].*%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT END%]", "[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT]")
+          content = content:gsub("%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT BEGIN%].-%[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT END%]", "[BOOK HIGHLIGHTS, NOTES AND NOTEBOOK CONTENT]")
         end
         user_message = string.format("\n\n%s\n\n", content)
       end
@@ -197,7 +203,7 @@ function AssistantDialog:_createAndShowViewer(highlightedText, message_history, 
         end
 
         viewer:trimMessageHistory()
-        NetworkMgr:runWhenOnline(function()
+        self.assistant:runWhenOnline(function()
           Trapper:wrap(function()
             local answer, err = self.querier:query(message_history)
             
@@ -221,7 +227,12 @@ function AssistantDialog:_createAndShowViewer(highlightedText, message_history, 
       end,
     highlighted_text = highlightedText,
     message_history = message_history,
-    render_markdown = koutil.tableGetValue(self.CONFIGURATION, "features", "render_markdown") or true,
+    -- `or true` would make `render_markdown = false` impossible; default only on nil
+    render_markdown = (function()
+      local v = koutil.tableGetValue(self.CONFIGURATION, "features", "render_markdown")
+      if v == nil then return true end
+      return v
+    end)(),
     default_hold_callback = function () chatgpt_viewer:HoldClose() end
   }
   
@@ -402,7 +413,7 @@ function AssistantDialog:show(highlightedText)
               self.assistant.quicknote:saveNote(user_question, highlightedText)
             else
               local book_text_prompt = ""
-              if use_book_text_checkbox.checked then
+              if use_book_text_checkbox and use_book_text_checkbox.checked then
                 local book_text = extractBookTextForAnalysis(self.CONFIGURATION, self.assistant.ui)
                 if book_text then
                   book_text_prompt = string.format("\n\n[! IMPORTANT !] Here is the book text up to my current position, only consider this text for your response:\n [BOOK TEXT BEGIN]\n%s\n[BOOK TEXT END]", book_text)
@@ -497,14 +508,28 @@ end
 -- ( custom prompts from configuration )
 function AssistantDialog:showCustomPrompt(highlightedText, prompt_index, user_input)
 
+  -- Guard: dict-popup buttons can invoke this without a word, and a config
+  -- prompt may override only `text` and lack a `user_prompt`
+  if not highlightedText or highlightedText == "" then
+    UIManager:show(InfoMessage:new{
+      text = _("No text selected for this prompt."), timeout = 3 })
+    return
+  end
+
   local user_prompts = koutil.tableGetValue(self.CONFIGURATION, "features", "prompts")
   local prompt_config = Prompts.getMergedCustomPrompts(user_prompts)[prompt_index]
+  local user_prompt_template = koutil.tableGetValue(prompt_config, "user_prompt")
+  if not user_prompt_template then
+    UIManager:show(InfoMessage:new{ icon = "notice-warning",
+      text = T(_("Prompt '%1' has no user_prompt defined in the configuration."), tostring(prompt_index)) })
+    return
+  end
 
   local title = koutil.tableGetValue(prompt_config, "text") or prompt_index
 
   highlightedText = highlightedText:gsub("\n", "\n\n") -- ensure newlines are doubled (LLM presumes markdown input)
 
-  local user_content = self:_formatUserPrompt(koutil.tableGetValue(prompt_config, "user_prompt"), highlightedText, user_input or "")
+  local user_content = self:_formatUserPrompt(user_prompt_template, highlightedText, user_input or "")
   local system_prompt = koutil.tableGetValue(prompt_config, "system_prompt") or koutil.tableGetValue(Prompts, "assistant_prompts", "default", "system_prompt")
 
   if self.assistant.settings:readSetting("auto_prompt_suggest", false) then

@@ -33,7 +33,9 @@ local showPickerDialog, showManualInput
 
 --- Fetch models list from OpenRouter API (runs in dismissable subprocess)
 local function fetchOpenRouterModels(list_url)
-    local infomsg = InfoMessage:new{
+    -- TrapWidget (like the update checker uses) blocks input during the fetch;
+    -- a tappable InfoMessage closed itself on tap and was then closed again below
+    local infomsg = TrapWidget:new{
         text = _("Fetching models..."),
     }
     UIManager:show(infomsg)
@@ -70,7 +72,8 @@ local function fetchOpenRouterModels(list_url)
         body = decompressed
     end
     local ok, parsed = pcall(json.decode, body)
-    if not ok or not parsed or not parsed.data then
+    -- rapidjson can decode a bare `null` into userdata; only index tables
+    if not ok or type(parsed) ~= "table" or not parsed.data then
         return nil, _("Failed to parse model list.")
     end
 

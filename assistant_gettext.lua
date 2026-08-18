@@ -211,9 +211,11 @@ function GetText_mt.__index.changeLang(new_lang)
                 -- header
                 if not headers and data.msgid == "" then
                     headers = data.msgstr
+                    -- a .po without a Plural-Forms header must not crash the
+                    -- plugin at require time; fall back to the default below
                     local plural_forms = data.msgstr:match("Plural%-Forms: (.*)")
-                    local nplurals = plural_forms:match("nplurals=([0-9]+);") or 2
-                    local plurals = plural_forms:match("plural=%((.*)%);")
+                    local nplurals = plural_forms and plural_forms:match("nplurals=([0-9]+);") or 2
+                    local plurals = plural_forms and plural_forms:match("plural=%((.*)%);")
 
                     -- Hardcoded workaround for Hebrew which has 4 plural forms.
                     if plurals == "n == 1) ? 0 : ((n == 2) ? 1 : ((n > 10 && n % 10 == 0) ? 2 : 3)" then
@@ -228,7 +230,7 @@ function GetText_mt.__index.changeLang(new_lang)
                         plurals = "n == 1 ? 0 : (n == 0 || n != 1 && n % 100 >= 1 && n % 100 <= 19) ? 1 : 2"
                     end
 
-                    if not plurals then
+                    if not plurals and plural_forms then
                         -- Some languages (e.g., Arabic) may not use parentheses.
                         -- However, the following more inclusive match is more likely
                         -- to accidentally include junk and seldom relevant.
@@ -237,7 +239,7 @@ function GetText_mt.__index.changeLang(new_lang)
                         plurals = plural_forms:match("plural=(.*);")
                     end
 
-                    if plurals:find("[^n!=%%<>&:%(%)|?0-9 ]") then
+                    if not plurals or plurals:find("[^n!=%%<>&:%(%)|?0-9 ]") then
                         -- we don't trust this input, go with default instead
                         plurals = GetText.plural_default
                     end
