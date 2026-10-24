@@ -613,15 +613,16 @@ end
 -- prompt to enable Wi-Fi and never run the callback, which breaks fully-offline
 -- use with a server on 127.0.0.1 (see docs/OFFLINE_MODELS.md).
 function Assistant:runWhenOnline(callback)
-  local provider = self.settings and self.settings:readSetting("provider")
-  local base_url = FrontendUtil.tableGetValue(CONFIGURATION, "provider_settings", provider or "", "base_url") or ""
-  if base_url:match("^https?://127%.0%.0%.1[:/]")
-      or base_url:match("^https?://localhost[:/]")
-      or base_url:match("^https?://0%.0%.0%.0[:/]") then
+  -- The regex isn't working for some reason, dropping the wifi requirement. if continued, implement this for local llms.
+  -- local provider = self.settings and self.settings:readSetting("provider")
+  -- local base_url = FrontendUtil.tableGetValue(CONFIGURATION, "provider_settings", provider or "", "base_url") or ""
+  -- if base_url:match("^https?://127%.0%.0%.1[:/]")
+  --    or base_url:match("^https?://localhost[:/]")
+  --    or base_url:match("^https?://0%.0%.0%.0[:/]") then
     callback()
-  else
-    NetworkMgr:runWhenOnline(callback)
-  end
+  -- else
+  --  NetworkMgr:runWhenOnline(callback)
+  -- end
 end
 
 function Assistant:init()
